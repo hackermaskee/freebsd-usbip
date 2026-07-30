@@ -1,0 +1,13 @@
+*.o
+*.ko
+*.kld
+.depend*
+machine
+x86
+usr.sbin/usbip/usbip
+tests/proto_test
+__pycache__/
+export_syms
+vnode_if*.h
+*.orig
+*.rej
