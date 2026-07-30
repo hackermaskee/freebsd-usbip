@@ -9,6 +9,12 @@ all:
 
 check: all
 	$(MAKE) -C tests check
+	$(MAKE) -C usr.sbin/usbip check
+	@if [ -d $${FREEBSD_SRC:-$$HOME/work/freebsd-src}/sys ]; then \
+		tools/syntax-check.sh; \
+	else \
+		echo "skipping kernel type-check: no FreeBSD source tree"; \
+	fi
 
 kmod:
 	$(MAKE) -C sys/modules/vhci

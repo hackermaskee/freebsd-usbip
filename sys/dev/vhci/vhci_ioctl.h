@@ -13,7 +13,11 @@
 #ifndef _VHCI_IOCTL_H_
 #define	_VHCI_IOCTL_H_
 
+#if defined(_KERNEL) || defined(__FreeBSD__)
 #include <sys/ioccom.h>
+#else
+#include <sys/ioctl.h>		/* only so the header can be compile-tested */
+#endif
 
 #include "usbip_proto.h"
 
