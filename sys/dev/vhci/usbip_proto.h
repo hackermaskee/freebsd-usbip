@@ -124,11 +124,19 @@ struct usbip_header_basic {
 	uint32_t	ep;		/* endpoint number, 0-15 */
 } __packed;
 
+/*
+ * number_of_packets is 0xffffffff (-1) for anything but an isochronous
+ * transfer.  Peers have been observed to send 0 instead, so treat both
+ * as "not ISO" on receive; see USBIP_IS_ISO().
+ */
+#define	USBIP_NUMBER_OF_PACKETS_NON_ISO	(-1)
+#define	USBIP_IS_ISO(nop)		((nop) > 0)
+
 struct usbip_cmd_submit {
 	uint32_t	transfer_flags;		/* USBIP_URB_* */
 	int32_t		transfer_buffer_length;
 	int32_t		start_frame;		/* ISO only, else 0 */
-	int32_t		number_of_packets;	/* ISO only, else 0 */
+	int32_t		number_of_packets;	/* see above */
 	int32_t		interval;
 	uint8_t		setup[8];		/* control only, else zero */
 } __packed;
@@ -137,7 +145,7 @@ struct usbip_ret_submit {
 	int32_t		status;		/* 0 or negative Linux errno */
 	int32_t		actual_length;
 	int32_t		start_frame;
-	int32_t		number_of_packets;
+	int32_t		number_of_packets;	/* see above */
 	int32_t		error_count;
 	uint8_t		padding[8];
 } __packed;
