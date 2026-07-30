@@ -56,45 +56,6 @@ static MALLOC_DEFINE(M_VHCI, "vhci", "USB/IP virtual host controller");
  */
 #define	VHCI_SOCKBUF_SIZE	(1024 * 1024)
 
-/*
- * Transfers are not implemented yet; that is milestone M2.  Until then
- * every endpoint below the root hub fails cleanly instead of hanging.
- */
-static void
-vhci_stub_open(struct usb_xfer *xfer)
-{
-
-	(void)xfer;
-}
-
-static void
-vhci_stub_close(struct usb_xfer *xfer)
-{
-
-	(void)xfer;
-}
-
-static void
-vhci_stub_enter(struct usb_xfer *xfer)
-{
-
-	(void)xfer;
-}
-
-static void
-vhci_stub_start(struct usb_xfer *xfer)
-{
-
-	usbd_transfer_done(xfer, USB_ERR_NOT_STARTED);
-}
-
-static const struct usb_pipe_methods vhci_stub_methods = {
-	.open = vhci_stub_open,
-	.close = vhci_stub_close,
-	.enter = vhci_stub_enter,
-	.start = vhci_stub_start,
-};
-
 static void
 vhci_ep_init(struct usb_device *udev, struct usb_endpoint_descriptor *edesc,
     struct usb_endpoint *ep)
@@ -109,7 +70,7 @@ vhci_ep_init(struct usb_device *udev, struct usb_endpoint_descriptor *edesc,
 	case UE_CONTROL:
 	case UE_BULK:
 	case UE_INTERRUPT:
-		ep->methods = &vhci_stub_methods;
+		ep->methods = &vhci_pipe_methods;
 		break;
 	default:
 		/*
@@ -123,6 +84,7 @@ vhci_ep_init(struct usb_device *udev, struct usb_endpoint_descriptor *edesc,
 static void
 vhci_xfer_setup(struct usb_setup_params *parm)
 {
+	struct vhci_urb *urb;
 
 	/*
 	 * We never touch hardware, so these only have to be non-zero
@@ -133,6 +95,21 @@ vhci_xfer_setup(struct usb_setup_params *parm)
 	parm->hc_max_frame_size = 3 * 0x500;
 
 	usbd_transfer_setup_sub(parm);
+	if (parm->err != 0)
+		return;
+
+	/*
+	 * Carve the per-transfer USB/IP state out of the transfer's own
+	 * allocation, so submitting a transfer never has to allocate.
+	 */
+	parm->size[0] += ((-parm->size[0]) & (USB_HOST_ALIGN - 1));
+	if (parm->buf != NULL) {
+		urb = USB_ADD_BYTES(parm->buf, parm->size[0]);
+		memset(urb, 0, sizeof(*urb));
+		urb->xfer = parm->curr_xfer;
+		parm->curr_xfer->qh_start[0] = urb;
+	}
+	parm->size[0] += sizeof(*urb);
 }
 
 static void
@@ -265,6 +242,14 @@ vhci_ioctl_attach(struct vhci_softc *sc, struct vhci_ioc_attach *ia,
 	strlcpy(port->busid, ia->busid, sizeof(port->busid));
 	strlcpy(port->host, ia->host, sizeof(port->host));
 
+	error = vhci_session_start(port);
+	if (error != 0) {
+		port->so = NULL;
+		sx_xunlock(&sc->sc_sx);
+		soclose(so);
+		return (error);
+	}
+
 	USB_BUS_LOCK(&sc->sc_bus);
 	port->speed_bits = speed_bits;
 	port->connected = 1;
@@ -287,6 +272,13 @@ vhci_port_release(struct vhci_softc *sc, struct vhci_port *port)
 	struct socket *so;
 
 	sx_assert(&sc->sc_sx, SA_XLOCKED);
+
+	/*
+	 * Stop the transport before touching the port state, so that no
+	 * thread can complete a transfer against a port we are tearing
+	 * down.  This fails every transfer still outstanding.
+	 */
+	vhci_session_stop(port);
 
 	so = port->so;
 	port->so = NULL;

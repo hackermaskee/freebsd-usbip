@@ -26,6 +26,24 @@ in `sys/dev/vhci/usbip_proto.h`.
   -ECONNRESET (-104) when the URB was actually unlinked, or 0 if the
   UNLINK lost the race with RET_SUBMIT.
 
+## Consequences for the implementation
+
+- **A reply's header direction is useless.** The server zeroes
+  `direction` and `ep` in `USBIP_RET_SUBMIT`, so the only way to know
+  whether `actual_length` bytes of payload follow is to remember the
+  direction of the submission that the sequence number belongs to. This
+  matters most for a submission we have already given up on: `vhci(4)`
+  keeps a record of every cancelled sequence number, with its
+  direction, until the reply or the `USBIP_RET_UNLINK` arrives. Without
+  it a late reply to an OUT transfer would be mistaken for one with a
+  payload and the stream would silently desynchronise.
+- **A submission that has started must be sent in full.** Cancelling
+  part-way through would leave the server waiting for the rest of the
+  announced `transfer_buffer_length`.
+- **`URB_SHORT_NOT_OK` is deliberately never set.** The FreeBSD stack
+  decides for itself whether a short IN transfer is an error; asking the
+  server to fail them turns normal short reads into `-EREMOTEIO`.
+
 ## To verify on the wire (tcpdump against Linux, milestone M2)
 
 - **`number_of_packets` for non-ISO transfers.** The spec says
@@ -43,3 +61,8 @@ in `sys/dev/vhci/usbip_proto.h`.
   before implementing M4.
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
+- **`interval` units.** We send the transfer's interval in
+  milliseconds, which is what the FreeBSD stack works in. Linux URBs
+  express it in frames or microframes depending on speed, so this
+  probably needs converting before interrupt transfers are trustworthy
+  (milestone M3).

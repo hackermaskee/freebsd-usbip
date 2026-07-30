@@ -21,12 +21,17 @@ reference.)
 
 ## Status
 
-- **M0 (current)**: protocol library + `usbip list` / handshake, tests.
+- **M0 done**: protocol library + `usbip list` / handshake, tests.
   Pure userland; builds on both FreeBSD and Linux (the latter for
   development convenience and interop testing against Linux usbip).
-- M1: vhci skeleton — root hub visible in `usbconfig`.
-- M2: control + bulk transfers (umass works).
-- M3: interrupt transfers, unlink/timeout robustness.
+- **M1 done**: vhci skeleton — pseudo-device on nexus, usbus child,
+  software root hub, `/dev/vhci` with socket hand-off.
+- **M2 written, untested**: control, bulk and interrupt transfers over
+  the TCP session, with timeout and unlink handling. Nothing in the
+  kernel has been run yet: it type-checks against FreeBSD 14 headers
+  (`tools/syntax-check.sh`) but has never been built or loaded.
+- M3: run it. Interrupt transfer timing, interop against Linux, error
+  paths.
 - M4: isochronous, polish, man pages.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.

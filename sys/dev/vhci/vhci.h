@@ -14,6 +14,8 @@
 
 #include <sys/lock.h>
 #include <sys/sx.h>
+#include <sys/condvar.h>
+#include <sys/queue.h>
 
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -36,7 +38,65 @@
 #define	VHCI_MAX_XFER_LEN	(1024 * 1024)
 #define	VHCI_MAX_ISO_PACKETS	1024
 
+/*
+ * Size of the per-port socket staging buffers.  Transfer payloads are
+ * moved through them in chunks, so this bounds memory use rather than
+ * transfer size.  Keep it at or below the socket buffer high-water mark
+ * so a MSG_WAITALL receive of a full chunk cannot deadlock.
+ */
+#define	VHCI_STAGE_SIZE		(64 * 1024)
+
 struct vhci_softc;
+
+/*
+ * Per-transfer USB/IP state.  Allocated out of the transfer's own
+ * memory in xfer_setup, so submitting never has to allocate.  All
+ * fields are protected by the USB bus lock.
+ */
+enum vhci_urb_state {
+	VHCI_URB_IDLE = 0,	/* not in use */
+	VHCI_URB_TX,		/* queued for, or being, transmitted */
+	VHCI_URB_INFLIGHT,	/* sent, awaiting USBIP_RET_SUBMIT */
+};
+
+struct vhci_urb {
+	TAILQ_ENTRY(vhci_urb) entry;
+	struct usb_xfer	*xfer;
+	uint32_t	seqnum;		/* of the CMD_SUBMIT */
+	uint8_t		state;		/* enum vhci_urb_state */
+	uint8_t		queued;		/* on port->tx_queue */
+	/*
+	 * Set while a thread is using this transfer with the bus lock
+	 * dropped.  Completion is deferred to that thread, because the
+	 * transfer's memory - which holds this struct - may be freed as
+	 * soon as usbd_transfer_done() runs.
+	 */
+	uint8_t		busy;
+	uint8_t		aborted;	/* deferred completion pending */
+};
+
+TAILQ_HEAD(vhci_urb_list, vhci_urb);
+
+/*
+ * A cancelled submission.  Kept separate from struct vhci_urb because
+ * the transfer being cancelled is completed immediately and its memory,
+ * which holds the vhci_urb, may be gone before the unlink is even sent.
+ *
+ * The record also outlives the unlink itself: a server that had already
+ * finished the transfer answers with a USBIP_RET_SUBMIT for the
+ * original sequence number, and because the reply header carries no
+ * usable direction we would not otherwise know whether a payload
+ * follows it.
+ */
+#define	VHCI_UNLINK_MAX		32
+
+struct vhci_unlink {
+	uint32_t	seqnum;		/* of the CMD_UNLINK */
+	uint32_t	target;		/* of the CMD_SUBMIT being cancelled */
+	uint8_t		valid;
+	uint8_t		pending;	/* CMD_UNLINK not sent yet */
+	uint8_t		is_in;		/* a late reply carries a payload */
+};
 
 /*
  * One root-hub port.  Fields are protected by the USB bus lock unless
@@ -65,6 +125,24 @@ struct vhci_port {
 	uint32_t	usbip_speed;	/* USBIP_SPEED_* as imported */
 	char		busid[USBIP_BUSID_SIZE];
 	char		host[64];
+
+	/*
+	 * Transport threads and their queues.  Everything here is
+	 * protected by the USB bus lock; the threads drop it around
+	 * socket I/O and re-validate afterwards.
+	 */
+	struct cv	tx_cv;		/* work for the TX thread */
+	struct cv	exit_cv;	/* thread has finished */
+	struct vhci_urb_list tx_queue;	/* waiting to be transmitted */
+	struct vhci_urb_list inflight;	/* awaiting a reply */
+	struct vhci_unlink unlink[VHCI_UNLINK_MAX];
+	uint8_t		unlink_pending;	/* how many need transmitting */
+	uint32_t	next_seqnum;
+	uint8_t		*tx_buf;	/* TX thread only */
+	uint8_t		*rx_buf;	/* RX thread only */
+	uint8_t		tx_running;
+	uint8_t		rx_running;
+	uint8_t		disconnecting;
 };
 
 union vhci_hub_temp {
@@ -105,5 +183,11 @@ struct vhci_softc {
 usb_error_t	vhci_roothub_exec(struct usb_device *,
 		    struct usb_device_request *, const void **, uint16_t *);
 void		vhci_root_intr(struct vhci_softc *, uint8_t port_index);
+
+/* vhci_hcd.c */
+extern const struct usb_pipe_methods vhci_pipe_methods;
+
+int		vhci_session_start(struct vhci_port *);
+void		vhci_session_stop(struct vhci_port *);
 
 #endif /* !_VHCI_H_ */
