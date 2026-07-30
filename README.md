@@ -17,21 +17,22 @@ reference.)
 | `sys/dev/vhci/` | `vhci(4)`: virtual USB host controller kernel driver. Plugs into the FreeBSD usb(4) stack, speaks the USB/IP URB phase over a TCP socket handed off from userland. |
 | `sys/modules/vhci/` | kmod build glue (FreeBSD only, `bsd.kmod.mk`). |
 | `usr.sbin/usbip/` | `usbip(8)`: `list` / `attach` / `detach` / `port`. Performs the OP_REQ_DEVLIST / OP_REQ_IMPORT handshake in userland, then passes the connected socket to `vhci(4)`. |
-| `tests/` | Protocol golden tests (`proto_test`) and a fake USB/IP server (`fake_usbipd.py`) for regression testing without hardware. |
+| `tests/` | Protocol golden tests (`proto_test`), a USB/IP server that emulates a device in software (`fake_usbipd.py`), and a transfer exerciser (`bulk_test.c`). No hardware or privileges needed. |
+| `tools/` | Build and test helpers: `syntax-check.sh` type-checks the driver on a non-FreeBSD machine; `smoke-test.sh`, `race-test.sh` and `attach-test.sh` are the three things worth running on the target; `linux-vudc-server.sh` stands up a real Linux server for interop testing. |
 
 ## Status
 
-- **M0 done**: protocol library + `usbip list` / handshake, tests.
-  Pure userland; builds on both FreeBSD and Linux (the latter for
-  development convenience and interop testing against Linux usbip).
-- **M1 done**: vhci skeleton — pseudo-device on nexus, usbus child,
-  software root hub, `/dev/vhci` with socket hand-off.
-- **M2 written, untested**: control, bulk and interrupt transfers over
-  the TCP session, with timeout and unlink handling. Nothing in the
-  kernel has been run yet: it type-checks against FreeBSD 14 headers
-  (`tools/syntax-check.sh`) but has never been built or loaded.
-- M3: run it. Interrupt transfer timing, interop against Linux, error
-  paths.
+Verified on FreeBSD 14.4-RELEASE (amd64): a device exported by
+`tests/fake_usbipd.py` enumerates, and control, bulk and interrupt
+transfers all work.
+
+- **M0 done**: protocol library, `usbip list`, golden tests.
+- **M1 done**: root hub enumerates; `uhub0: 8 ports with 8 removable`.
+- **M2 done**: control, bulk and interrupt transfers, verified end to
+  end. Bulk round trips are byte-exact from 1 byte to 100 KB, spanning
+  the max packet size and the driver's staging buffer.
+- **M3 in progress**: error paths, and interoperability against the
+  real Linux `usbipd` rather than against our own test server.
 - M4: isochronous, polish, man pages.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.
@@ -44,21 +45,28 @@ make check  # run protocol golden tests
 make kmod   # vhci(4) kernel module (FreeBSD 14.x only)
 ```
 
-## Quick interop test against a Linux server
+## Testing
 
-On the Linux side:
+Everything below runs without USB hardware.
 
 ```sh
-sudo modprobe usbip-host
-sudo usbipd -D
-usbip list -l
-sudo usbip bind -b <busid>
+sudo tools/smoke-test.sh    # does the driver load and the root hub appear?
+sudo tools/race-test.sh     # is unloading during enumeration refused?
+sudo tools/attach-test.sh   # attach an emulated device and move data
 ```
 
-Then from this tree:
+To test against the canonical implementation rather than our own
+server, on a Linux machine:
 
 ```sh
-usr.sbin/usbip/usbip list -r <linux-host>
+sudo tools/linux-vudc-server.sh
+```
+
+then from FreeBSD:
+
+```sh
+usbip attach -r <linux-host> -b usbip-vudc.0
+tests/bulk_test 0525 a4a0
 ```
 
 ## License

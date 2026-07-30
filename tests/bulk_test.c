@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 
 #include <libusb.h>
@@ -26,6 +28,7 @@
 #define	TEST_PRODUCT	0x0001
 #define	EP_BULK_IN	0x81
 #define	EP_BULK_OUT	0x02
+#define	EP_INTR_IN	0x83
 #define	TIMEOUT_MS	5000
 
 static int failures;
@@ -79,11 +82,57 @@ out:
 	free(in);
 }
 
+/*
+ * The emulated interrupt endpoint returns an incrementing counter, so
+ * consecutive reads must come back in order.  That catches a transfer
+ * engine that mismatches replies to requests as well as one that fails
+ * outright.
+ */
+static void
+interrupt_reads(libusb_device_handle *dh, int count)
+{
+	unsigned char buf[8];
+	uint64_t got, expect = 0;
+	int transferred, error, i;
+
+	for (i = 0; i < count; i++) {
+		memset(buf, 0, sizeof(buf));
+		transferred = 0;
+		error = libusb_interrupt_transfer(dh, EP_INTR_IN, buf,
+		    sizeof(buf), &transferred, TIMEOUT_MS);
+		CHECK(error == 0, "interrupt read %d: %s", i,
+		    libusb_strerror(error));
+		if (error != 0)
+			return;
+		CHECK(transferred == (int)sizeof(buf),
+		    "interrupt read %d moved %d", i, transferred);
+
+		memcpy(&got, buf, sizeof(got));
+		if (i == 0)
+			expect = got;
+		CHECK(got == expect, "interrupt read %d out of order: "
+		    "got %ju, expected %ju", i, (uintmax_t)got,
+		    (uintmax_t)expect);
+		expect = got + 1;
+	}
+	printf("  %d interrupt reads, in order: ok\n", count);
+}
+
 int
-main(void)
+main(int argc, char **argv)
 {
 	libusb_device_handle *dh;
+	int vendor = TEST_VENDOR, product = TEST_PRODUCT;
 	int error;
+
+	/* Point the test at another device, e.g. Linux's g_zero gadget. */
+	if (argc == 3) {
+		vendor = (int)strtol(argv[1], NULL, 16);
+		product = (int)strtol(argv[2], NULL, 16);
+	} else if (argc != 1) {
+		fprintf(stderr, "usage: %s [vendor product]\n", argv[0]);
+		return (1);
+	}
 
 	error = libusb_init(NULL);
 	if (error != 0) {
@@ -91,11 +140,11 @@ main(void)
 		return (1);
 	}
 
-	dh = libusb_open_device_with_vid_pid(NULL, TEST_VENDOR, TEST_PRODUCT);
+	dh = libusb_open_device_with_vid_pid(NULL, vendor, product);
 	if (dh == NULL) {
 		fprintf(stderr,
 		    "no %04x:%04x found; is the device attached?\n",
-		    TEST_VENDOR, TEST_PRODUCT);
+		    vendor, product);
 		libusb_exit(NULL);
 		return (1);
 	}
@@ -122,6 +171,8 @@ main(void)
 	loopback(dh, 4096);
 	loopback(dh, 65536);
 	loopback(dh, 100000);
+
+	interrupt_reads(dh, 32);
 
 	libusb_release_interface(dh, 0);
 	libusb_close(dh);

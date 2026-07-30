@@ -50,7 +50,10 @@ PRODUCT = 0x0001
 
 EP_BULK_IN = 1
 EP_BULK_OUT = 2
+EP_INTR_IN = 3
 BULK_MAXP = 512
+INTR_MAXP = 64
+INTR_LEN = 8
 
 
 def le16(v):
@@ -66,11 +69,13 @@ DEVICE_DESC = (
 )
 
 CONFIG_DESC = (
-    bytes([9, 0x02]) + le16(9 + 9 + 7 + 7)
+    bytes([9, 0x02]) + le16(9 + 9 + 7 + 7 + 7)
     + bytes([1, 1, 0, 0xC0, 0])       # 1 iface, cfg 1, self powered
-    + bytes([9, 0x04, 0, 0, 2, 0xFF, 0x00, 0x00, 0])
+    + bytes([9, 0x04, 0, 0, 3, 0xFF, 0x00, 0x00, 0])
     + bytes([7, 0x05, 0x80 | EP_BULK_IN, 0x02]) + le16(BULK_MAXP) + bytes([0])
     + bytes([7, 0x05, EP_BULK_OUT, 0x02]) + le16(BULK_MAXP) + bytes([0])
+    # Interrupt IN, bInterval 4 => 8 microframes => 1ms at high speed.
+    + bytes([7, 0x05, 0x80 | EP_INTR_IN, 0x03]) + le16(INTR_MAXP) + bytes([4])
 )
 
 
@@ -118,6 +123,7 @@ class Device:
         self.log = log
         self.configuration = 0
         self.loopback = bytearray()
+        self.intr_counter = 0
 
     def control(self, setup, out_data, length):
         """Return (status, in_data) for a control transfer."""
@@ -177,6 +183,12 @@ class Device:
         del self.loopback[:take]
         return E_OK, data
 
+    def interrupt_in(self, length):
+        """A counter, so the client can tell one report from the next."""
+        data = struct.pack("<Q", self.intr_counter)[:min(length, INTR_LEN)]
+        self.intr_counter += 1
+        return E_OK, data
+
 
 class Session:
     def __init__(self, conn, verbose):
@@ -221,6 +233,8 @@ class Session:
                 status, in_data = self.dev.control(setup, out_data, buflen)
             elif direction == DIR_IN and ep == EP_BULK_IN:
                 status, in_data = self.dev.bulk_in(buflen)
+            elif direction == DIR_IN and ep == EP_INTR_IN:
+                status, in_data = self.dev.interrupt_in(buflen)
             elif direction == DIR_OUT and ep == EP_BULK_OUT:
                 status = self.dev.bulk_out(out_data)
                 in_data = b""
