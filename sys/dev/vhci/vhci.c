@@ -120,6 +120,30 @@ vhci_xfer_unsetup(struct usb_xfer *xfer)
 }
 
 /*
+ * Absorb SET_ADDRESS instead of sending it.
+ *
+ * The remote device is already enumerated and addressed on the server's
+ * own bus, and USB/IP identifies it by devid rather than by USB
+ * address.  Putting a SET_ADDRESS on the wire would change the address
+ * the server itself is talking to and break the session.  Returning
+ * anything but USB_ERR_INVAL tells the stack we handled it; it assigns
+ * the address locally, which is all that is needed.
+ */
+static usb_error_t
+vhci_set_address(struct usb_device *udev, struct mtx *mtx, uint16_t addr)
+{
+
+	(void)mtx;
+	(void)addr;
+
+	/* The root hub is emulated, so let the normal path handle it. */
+	if (udev->parent_hub == NULL)
+		return (USB_ERR_INVAL);
+
+	return (USB_ERR_NORMAL_COMPLETION);
+}
+
+/*
  * get_dma_delay, clear_stall, xfer_poll and the device-mode methods are
  * deliberately absent.  We have no DMA engine to drain, stall recovery
  * in host mode is a CLEAR_FEATURE sent over the wire by the stack, and
@@ -130,6 +154,7 @@ static const struct usb_bus_methods vhci_bus_methods = {
 	.endpoint_init = vhci_ep_init,
 	.xfer_setup = vhci_xfer_setup,
 	.xfer_unsetup = vhci_xfer_unsetup,
+	.set_address = vhci_set_address,
 };
 
 /*
@@ -478,12 +503,84 @@ fail_sx:
 	return (error);
 }
 
+/*
+ * True when every device below us has finished attaching.
+ *
+ * The USB stack brings the root hub up on its own explore thread, so
+ * the bus is still coming up when device_probe_and_attach() returns.
+ * If we tear down during that window, usb_bus_detach() frees the root
+ * hub even though the hub driver refused to detach - it ignores the
+ * return of bus_generic_detach() - and the hub driver is left pointing
+ * at this module's memory.  Unloading then panics the machine.
+ *
+ * We cannot wait for the explore thread here: attach and detach both
+ * run holding the newbus topology lock, which that thread needs in
+ * order to make progress.  So report the state and let the caller
+ * refuse instead.
+ */
+static bool
+vhci_subtree_attached(device_t dev)
+{
+	device_t *children;
+	int n, i;
+	bool settled = true;
+
+	if (device_get_children(dev, &children, &n) != 0)
+		return (false);
+	for (i = 0; i < n; i++) {
+		if (!device_is_attached(children[i]) ||
+		    !vhci_subtree_attached(children[i])) {
+			settled = false;
+			break;
+		}
+	}
+	free(children, M_TEMP);
+	return (settled);
+}
+
+/*
+ * The root hub is the one child usbus always ends up with, so its
+ * absence means enumeration has not reached it yet rather than that
+ * there is nothing to wait for.  Treating an empty child list as
+ * settled would miss exactly the window this guard exists for.
+ */
+static bool
+vhci_bus_settled(struct vhci_softc *sc)
+{
+	device_t bdev = sc->sc_bus.bdev;
+	device_t *children;
+	int n;
+	bool settled;
+
+	if (bdev == NULL)
+		return (true);
+	if (!device_is_attached(bdev))
+		return (false);
+	if (device_get_children(bdev, &children, &n) != 0)
+		return (false);
+	free(children, M_TEMP);
+	if (n == 0)
+		return (false);
+
+	settled = vhci_subtree_attached(bdev);
+	return (settled);
+}
+
 static int
 vhci_detach(device_t dev)
 {
 	struct vhci_softc *sc = device_get_softc(dev);
 	struct socket *so[VHCI_NPORTS];
 	int i;
+
+	/*
+	 * Refuse to unload while anything below us is still attaching;
+	 * see vhci_subtree_attached().  Retrying a moment later works.
+	 */
+	if (!vhci_bus_settled(sc)) {
+		device_printf(dev, "USB bus is still coming up, try again\n");
+		return (EBUSY);
+	}
 
 	/*
 	 * Release every port first so nothing is still using a socket

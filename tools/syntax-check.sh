@@ -54,16 +54,33 @@ status=0
 for f in vhci.c vhci_roothub.c vhci_hcd.c; do
 	[ -f "$V/$f" ] || continue
 	printf '%s: ' "$f"
-	if $CC -fsyntax-only -nostdinc -fno-builtin -D_KERNEL -DKLD_MODULE \
+	# Compile for real rather than -fsyntax-only: warnings such as an
+	# unused static function only appear once the compiler gets past
+	# parsing, and the FreeBSD kernel build turns those into errors.
+	#
+	# -Werror is not usable here: FreeBSD's bundled contrib/ck
+	# headers are written for clang and warn under gcc.  Instead,
+	# fail on any diagnostic that points at one of our own files.
+	$CC -c -o /dev/null -nostdinc -fno-builtin \
+	    -D_KERNEL -DKLD_MODULE \
 	    -std=gnu99 -Wall -Wno-unused-parameter -Wno-pointer-sign \
 	    -include opt_global.h \
 	    -isystem "$G" -I. -I"$V" -I"$S" -I"$S/contrib/ck/include" \
-	    "$V/$f" 2> "$B/$f.log"; then
+	    "$V/$f" > "$B/$f.log" 2>&1
+	rc=$?
+
+	ours=$(grep -E "^$V/[^:]*:[0-9]+:[0-9]+: (error|warning):" \
+	    "$B/$f.log" || true)
+	if [ $rc -eq 0 ] && [ -z "$ours" ]; then
 		echo ok
 	else
 		echo FAILED
-		grep -v '^In file\|note:\|^\s*|\|^\s*+++\|^\s*[0-9]* |' \
-		    "$B/$f.log" >&2 || true
+		if [ -n "$ours" ]; then
+			echo "$ours" >&2
+		else
+			grep -v '^In file\|note:\|^\s*|\|^\s*+++\|^\s*[0-9]* |' \
+			    "$B/$f.log" >&2 || true
+		fi
 		status=1
 	fi
 done

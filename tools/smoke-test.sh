@@ -31,6 +31,9 @@ show_new_dmesg() {
 
 echo "== loading =="
 kldload "$KO"
+# The root hub attaches asynchronously on the USB explore thread, so
+# give it a moment before looking at the result.
+sleep 3
 show_new_dmesg
 
 echo "== module =="
@@ -45,6 +48,12 @@ devinfo 2>/dev/null | grep -A2 -i vhci | sed 's/^/    /' || \
 
 echo "== USB buses =="
 usbconfig list 2>&1 | sed 's/^/    /'
+
+echo "== root hub descriptors =="
+usbconfig -d ugen0.1 dump_device_desc 2>&1 | sed 's/^/    /'
+
+echo "== root hub ports =="
+usbconfig -d ugen0.1 dump_info 2>&1 | sed 's/^/    /'
 
 echo "== unloading =="
 kldunload vhci
