@@ -69,6 +69,14 @@ usbconfig list 2>&1 | sed 's/^/    /'
 echo "== enumerated device =="
 usbconfig -d ugen0.2 dump_device_desc 2>&1 | sed 's/^/    /'
 
+echo "== bulk loopback =="
+if [ -x "$TOP/tests/bulk_test" ]; then
+	"$TOP/tests/bulk_test" 2>&1 | sed 's/^/    /'
+	echo "  bulk exit=$?"
+else
+	echo "    (tests/bulk_test not built; make -C tests bulk_test)"
+fi
+
 echo "== detach =="
 "$USBIP" detach -p 0 | sed 's/^/    /'
 sleep 2
