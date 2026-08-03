@@ -46,23 +46,38 @@ modprobe usbip-vudc num=1
 modprobe g_zero loopdefault=1
 
 echo "== virtual UDC =="
-ls /sys/class/udc/ | sed 's/^/    /'
+for udc in /sys/class/udc/*/; do
+	name=$(basename "$udc")
+	printf '    %s: function=%s state=%s\n' "$name" \
+	    "$(cat "$udc/function" 2>/dev/null)" \
+	    "$(cat "$udc/state" 2>/dev/null)"
+done
+if [ "$(cat /sys/class/udc/usbip-vudc.0/function 2>/dev/null)" != zero ]; then
+	echo "    !! g_zero did not bind to usbip-vudc.0" >&2
+	exit 1
+fi
 
-echo "== starting usbipd =="
+# Device mode is what serves a gadget bound to usbip-vudc; the default
+# host mode only exports real USB devices attached to this machine.
+echo "== starting usbipd in device mode =="
 pkill usbipd 2>/dev/null || true
 sleep 1
-usbipd -D
+usbipd -e -D
 sleep 1
+pgrep -l usbipd | sed 's/^/    /' || { echo "    usbipd failed to start" >&2; exit 1; }
 
-echo "== exportable devices =="
-usbip list -l 2>&1 | sed 's/^/    /'
+echo "== exportable gadgets =="
+usbip list -d 2>&1 | sed 's/^/    /'
 
+addr=$(hostname -I 2>/dev/null | awk '{print $1}')
 cat <<EOF
+
+Nothing here touches any real USB device on this machine.
 
 The gadget presents itself as 0525:a4a0.  From the FreeBSD machine:
 
-    usbip list -r $(hostname -I 2>/dev/null | awk '{print $1}')
-    usbip attach -r $(hostname -I 2>/dev/null | awk '{print $1}') -b usbip-vudc.0
+    usbip list -r $addr
+    usbip attach -r $addr -b usbip-vudc.0
     tests/bulk_test 0525 a4a0
 
 Tear down with: sudo $0 stop
