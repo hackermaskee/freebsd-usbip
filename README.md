@@ -22,17 +22,19 @@ reference.)
 
 ## Status
 
-Verified on FreeBSD 14.4-RELEASE (amd64): a device exported by
-`tests/fake_usbipd.py` enumerates, and control, bulk and interrupt
-transfers all work.
+Verified on FreeBSD 14.4-RELEASE (amd64), against **the real Linux
+`usbipd`** as well as against our own test server: a remote device
+enumerates and control, bulk and interrupt transfers all work.
 
 - **M0 done**: protocol library, `usbip list`, golden tests.
 - **M1 done**: root hub enumerates; `uhub0: 8 ports with 8 removable`.
 - **M2 done**: control, bulk and interrupt transfers, verified end to
   end. Bulk round trips are byte-exact from 1 byte to 100 KB, spanning
   the max packet size and the driver's staging buffer.
-- **M3 in progress**: error paths, and interoperability against the
-  real Linux `usbipd` rather than against our own test server.
+- **M3 mostly done**: interoperability against the real Linux `usbipd`
+  confirmed, serving a `g_zero` gadget over `usbip-vudc`. Bulk round
+  trips are byte-exact from 1 byte to 100 KB. Error and disconnect
+  paths still need deliberate testing.
 - M4: isochronous, polish, man pages.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.

@@ -44,6 +44,30 @@ in `sys/dev/vhci/usbip_proto.h`.
   decides for itself whether a short IN transfer is an error; asking the
   server to fail them turns normal short reads into `-EREMOTEIO`.
 
+## Confirmed against the real Linux implementation
+
+Verified by attaching to a Linux `usbipd` serving a `g_zero` gadget on
+`usbip-vudc`, from FreeBSD 14.4. Enumeration, descriptors, strings and
+bulk transfers from 1 byte to 100 KB all work. What that settles:
+
+- The handshake, the 48-byte header layout, `devid`, and the
+  direction/endpoint encoding are right, because the canonical
+  implementation understands them.
+- `number_of_packets` as 0xffffffff for non-ISO is accepted by Linux.
+- Absorbing SET_ADDRESS locally is required, not optional. The gadget
+  never saw one, which is what we want; forwarding it would have
+  re-addressed the device out from under the server.
+
+The one thing our own test server was too generous about: it takes the
+transfer length from the USB/IP header, so it does not care about
+**zero-length packet termination**. A real device does. Writing an
+exact multiple of the maximum packet size leaves the device waiting for
+more data until a short or zero-length packet ends the transfer, and a
+loopback device then echoes that ZLP back. That is USB semantics rather
+than anything USB/IP-specific, and it is carried correctly, but it is
+worth knowing that passing against `fake_usbipd.py` does not prove a
+transfer size is safe.
+
 ## To verify on the wire (tcpdump against Linux, milestone M2)
 
 - **`number_of_packets` for non-ISO transfers.** The spec says
