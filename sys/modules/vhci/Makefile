@@ -7,6 +7,7 @@
 .PATH:	${.CURDIR}/../../dev/vhci
 
 KMOD=	vhci
+MAN=	vhci.4
 SRCS=	vhci.c vhci_roothub.c vhci_hcd.c
 SRCS+=	bus_if.h device_if.h usb_if.h
 SRCS+=	opt_bus.h opt_usb.h

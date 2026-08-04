@@ -1,0 +1,131 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 furuta@furuta.bsdclub.org
+.\"
+.Dd August 4, 2026
+.Dt USBIP 8
+.Os
+.Sh NAME
+.Nm usbip
+.Nd attach USB devices exported over the network
+.Sh SYNOPSIS
+.Nm
+.Cm list
+.Fl r Ar host
+.Op Fl t Ar port
+.Nm
+.Cm attach
+.Fl r Ar host
+.Fl b Ar busid
+.Op Fl t Ar port
+.Nm
+.Cm detach
+.Fl p Ar port
+.Nm
+.Cm port
+.Sh DESCRIPTION
+The
+.Nm
+utility attaches USB devices exported by a remote USB/IP server, so that
+they appear on the local USB bus and can be used by ordinary drivers.
+It is the userland half of
+.Xr vhci 4 ,
+which must be loaded.
+.Pp
+The commands are:
+.Bl -tag -width "detach"
+.It Cm list
+List the devices
+.Ar host
+is willing to export.
+This does not need
+.Xr vhci 4
+and does not change anything.
+.It Cm attach
+Import the device named by
+.Ar busid
+from
+.Ar host
+and attach it to a free port.
+The
+.Ar busid
+is one of the identifiers reported by
+.Cm list .
+On success the port it was attached to is printed.
+.It Cm detach
+Detach the device on the given
+.Ar port ,
+as though it had been unplugged.
+.It Cm port
+List the ports that currently have a device attached.
+.El
+.Pp
+The options are:
+.Bl -tag -width "-b busid"
+.It Fl r Ar host
+The server to talk to.
+.It Fl b Ar busid
+The device to import, as reported by
+.Cm list .
+.It Fl t Ar port
+The TCP port the server listens on.
+The default is 3240.
+.It Fl p Ar port
+The local
+.Xr vhci 4
+port number, as reported by
+.Cm port .
+.El
+.Pp
+Attaching and detaching require root privileges;
+.Cm list
+does not.
+.Sh IMPLEMENTATION NOTES
+.Nm
+performs the USB/IP handshake itself and then hands the connected socket
+to
+.Xr vhci 4 ,
+which owns it from that point on.
+.Nm
+does not stay running: there is no daemon to keep alive, and killing the
+shell it was run from does not disturb an attached device.
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+List what a server offers and attach one of its devices:
+.Bd -literal -offset indent
+# kldload vhci
+$ usbip list -r server.example.org
+Exportable USB devices on server.example.org:
+  1-1            0781:5567  High Speed (480 Mbit/s)
+                  class 00/00/00  conf 1  ifaces 1
+                  if0  class 08/06/50
+# usbip attach -r server.example.org -b 1-1
+imported 1-1: 0781:5567 (High Speed (480 Mbit/s)), devid 0x10002
+attached to port 0
+.Ed
+.Pp
+The device is now visible to
+.Xr usbconfig 8
+and to class drivers.
+When finished:
+.Bd -literal -offset indent
+# usbip detach -p 0
+.Ed
+.Sh SEE ALSO
+.Xr usb 4 ,
+.Xr vhci 4 ,
+.Xr usbconfig 8
+.Sh HISTORY
+The
+.Nm
+utility was written in 2026.
+It speaks the same protocol as the Linux tool of the same name but
+shares no code with it.
+.Sh AUTHORS
+.An Atsushi Furuta Aq Mt furuta@furuta.bsdclub.org
+.Sh CAVEATS
+The connection carries USB traffic in the clear and is not
+authenticated.
+Anything attached over an untrusted network should be treated as
+untrusted, both for what it can see and for what it presents itself as.

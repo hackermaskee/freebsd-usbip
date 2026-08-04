@@ -1,0 +1,93 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 furuta@furuta.bsdclub.org
+.\"
+.Dd August 4, 2026
+.Dt VHCI 4
+.Os
+.Sh NAME
+.Nm vhci
+.Nd virtual USB host controller for USB/IP
+.Sh SYNOPSIS
+To load the driver at boot time, add this line to
+.Xr loader.conf 5 :
+.Bd -literal -offset indent
+vhci_load="YES"
+.Ed
+.Sh DESCRIPTION
+The
+.Nm
+driver presents a USB host controller that has no hardware behind it.
+Its root hub's ports are filled in by
+.Xr usbip 8 ,
+which connects to a USB/IP server, performs the protocol handshake, and
+hands the connected socket to the driver.
+From then on the driver forwards USB transfers over that socket, and the
+remote device appears on the local USB bus as though it were plugged in
+here.
+Ordinary class drivers attach to it in the usual way.
+.Pp
+The root hub is a USB 2.0 hub with eight ports, so up to eight remote
+devices may be attached at once.
+Each occupied port owns one TCP connection and a pair of kernel threads
+that carry transfers to and from the server.
+.Pp
+Control, bulk and interrupt transfers are supported.
+Isochronous transfers are not.
+.Pp
+The driver creates
+.Pa /dev/vhci ,
+through which
+.Xr usbip 8
+attaches and detaches devices and lists the ports.
+The interface is not intended to be used directly.
+.Sh IMPLEMENTATION NOTES
+A USB/IP server has already enumerated and addressed the device it
+exports, and identifies it by a device id rather than by USB address.
+.Nm
+therefore answers
+.Dv SET_ADDRESS
+locally instead of forwarding it, which would otherwise change the
+address the server itself is using and break the session.
+.Pp
+Everything the driver reads after the hand-off arrives over the network
+and is parsed in kernel context.
+A reply that does not make sense against the transfer it claims to
+answer causes the session to be dropped rather than acted on.
+.Pp
+If the connection is lost, the port is released and the device
+disappears as though it had been unplugged.
+Transfers outstanding at that moment fail; they do not hang.
+.Pp
+The USB stack brings the root hub up on its own thread, so the bus is
+still coming up when the driver finishes attaching.
+Unloading during that window is refused with
+.Er EBUSY ;
+retrying a moment later succeeds.
+.Sh SEE ALSO
+.Xr usb 4 ,
+.Xr usbconfig 8 ,
+.Xr usbip 8
+.Pp
+The protocol is described at
+.Lk https://docs.kernel.org/usb/usbip_protocol.html .
+.Sh HISTORY
+The
+.Nm
+driver was written from the protocol description in 2026.
+It shares no code with the Linux implementation.
+.Sh AUTHORS
+.An Atsushi Furuta Aq Mt furuta@furuta.bsdclub.org
+.Sh BUGS
+Isochronous transfers are not implemented, so devices that depend on
+them, such as audio interfaces and webcams, will not work.
+.Pp
+A control transfer that the USB stack splits across several submissions
+cannot be expressed as a single USB/IP message and is rejected.
+This does not arise during enumeration or for ordinary class drivers.
+.Pp
+The transfer interval is sent in milliseconds, which is what the
+.Fx
+USB stack works in, rather than in the frame units a Linux URB uses.
+Interrupt endpoints work, but their polling rate may not be honoured
+exactly.

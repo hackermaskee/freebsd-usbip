@@ -25,7 +25,15 @@ libusbip/usbip_net.o: libusbip/usbip_net.c libusbip/usbip_net.h \
 check:
 	$(CC) $(CFLAGS) -DVHCI_SUPPORTED=1 -fsyntax-only usbip.c
 
+BINDIR?=	/usr/local/sbin
+MANDIR?=	/usr/local/share/man/man8
+
+install: $(PROG)
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)
+	install -m 555 $(PROG) $(DESTDIR)$(BINDIR)/
+	install -m 444 usbip.8 $(DESTDIR)$(MANDIR)/
+
 clean:
 	rm -f $(PROG) $(OBJS)
 
-.PHONY: all check clean
+.PHONY: all check install clean

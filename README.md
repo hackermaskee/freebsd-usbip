@@ -36,7 +36,11 @@ enumerates and control, bulk and interrupt transfers all work.
   trips are byte-exact from 1 byte to 100 KB. A server that dies, with
   or without transfers outstanding, takes the device away cleanly and
   frees the port for reuse.
-- M4: isochronous, polish, man pages.
+- M4: isochronous transfers. Not started, and worth knowing before it
+  is: the protocol documentation does not spell out the isochronous
+  packet descriptor layout, so unlike everything above it cannot be
+  settled by reading the spec. It needs checking against a real
+  implementation carrying real isochronous traffic.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.
 
@@ -44,9 +48,22 @@ enumerates and control, bulk and interrupt transfers all work.
 
 ```sh
 make        # userland tool + tests (FreeBSD or Linux)
-make check  # run protocol golden tests
+make check  # golden tests, plus a type-check of the driver if a
+            # FreeBSD source tree is available (see FREEBSD_SRC)
 make kmod   # vhci(4) kernel module (FreeBSD 14.x only)
 ```
+
+The kernel module needs a FreeBSD source tree matching the running
+kernel:
+
+```sh
+make -C sys/modules/vhci SYSDIR=/usr/src/sys
+kldload sys/modules/vhci/vhci.ko
+```
+
+Development can happen on a non-FreeBSD machine: `tools/syntax-check.sh`
+compiles the driver against real FreeBSD headers to catch wrong struct
+members and signatures without a round trip to the target.
 
 ## Testing
 
