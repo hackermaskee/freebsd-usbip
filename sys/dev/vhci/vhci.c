@@ -28,6 +28,7 @@
 #include <sys/socketvar.h>
 #include <sys/protosw.h>
 #include <sys/proc.h>
+#include <sys/taskqueue.h>
 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -307,6 +308,7 @@ vhci_port_release(struct vhci_softc *sc, struct vhci_port *port)
 
 	so = port->so;
 	port->so = NULL;
+	port->dead = 0;
 	port->devid = 0;
 	port->usbip_speed = 0;
 	port->busid[0] = '\0';
@@ -322,6 +324,35 @@ vhci_port_release(struct vhci_softc *sc, struct vhci_port *port)
 	USB_BUS_UNLOCK(&sc->sc_bus);
 
 	return (so);
+}
+
+/*
+ * Tear down a port whose transport threads gave up on the connection.
+ * They cannot do this themselves, because releasing the port waits for
+ * them to exit.
+ */
+static void
+vhci_death_task(void *arg, int pending)
+{
+	struct vhci_port *port = arg;
+	struct vhci_softc *sc = port->sc;
+	struct socket *so;
+
+	(void)pending;
+
+	sx_xlock(&sc->sc_sx);
+	/* An explicit detach may have got here first. */
+	if (!port->connected || !port->dead) {
+		sx_xunlock(&sc->sc_sx);
+		return;
+	}
+	so = vhci_port_release(sc, port);
+	sx_xunlock(&sc->sc_sx);
+
+	if (so != NULL)
+		soclose(so);
+
+	device_printf(sc->sc_dev, "port %d: released\n", port->index);
 }
 
 static int
@@ -341,6 +372,12 @@ vhci_ioctl_detach(struct vhci_softc *sc, struct vhci_ioc_detach *id)
 	}
 	so = vhci_port_release(sc, port);
 	sx_xunlock(&sc->sc_sx);
+
+	/*
+	 * Drain outside the lock: a death task racing us blocks on it,
+	 * and will find the port already released once it runs.
+	 */
+	taskqueue_drain(taskqueue_thread, &port->death_task);
 
 	if (so != NULL)
 		soclose(so);
@@ -431,6 +468,8 @@ vhci_attach(device_t dev)
 	for (i = 0; i < VHCI_NPORTS; i++) {
 		sc->sc_port[i].sc = sc;
 		sc->sc_port[i].index = i;
+		TASK_INIT(&sc->sc_port[i].death_task, 0, vhci_death_task,
+		    &sc->sc_port[i]);
 	}
 
 	sc->sc_bus.parent = dev;
@@ -593,6 +632,10 @@ vhci_detach(device_t dev)
 			so[i] = vhci_port_release(sc, &sc->sc_port[i]);
 	}
 	sx_xunlock(&sc->sc_sx);
+
+	/* No death task may still be holding a port once we free it. */
+	for (i = 0; i < VHCI_NPORTS; i++)
+		taskqueue_drain(taskqueue_thread, &sc->sc_port[i].death_task);
 
 	for (i = 0; i < VHCI_NPORTS; i++) {
 		if (so[i] != NULL)

@@ -29,6 +29,7 @@
 #include <sys/endian.h>
 #include <sys/kthread.h>
 #include <sys/proc.h>
+#include <sys/taskqueue.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/protosw.h>
@@ -684,6 +685,12 @@ vhci_tx_thread(void *arg)
 		TAILQ_INSERT_TAIL(&port->inflight, urb, entry);
 	}
 
+	/*
+	 * Reaching here without being asked to stop means the socket
+	 * failed, so the session is over.
+	 */
+	if (!port->disconnecting)
+		vhci_session_died(port);
 	port->tx_running = 0;
 	cv_broadcast(&port->exit_cv);
 	VHCI_UNLOCK(sc);
@@ -892,6 +899,13 @@ vhci_rx_thread(void *arg)
 	}
 
 	VHCI_LOCK(sc);
+	/*
+	 * The peer is gone, or sent something we could not follow.
+	 * Either way this session is finished; take the port down so the
+	 * device does not linger looking usable.
+	 */
+	if (!port->disconnecting)
+		vhci_session_died(port);
 	port->rx_running = 0;
 	/* Nothing more will ever arrive; wake the TX thread too. */
 	port->disconnecting = 1;
@@ -960,6 +974,27 @@ fail:
 	port->tx_buf = NULL;
 	port->rx_buf = NULL;
 	return (error);
+}
+
+/*
+ * A transport thread has given up on the connection.  Hand the port
+ * teardown to a task: releasing the port waits for these threads to
+ * exit, so they cannot do it themselves, and leaving the port up would
+ * strand the device as one that looks attached but can never respond.
+ */
+void
+vhci_session_died(struct vhci_port *port)
+{
+	struct vhci_softc *sc = port->sc;
+
+	VHCI_LOCK_ASSERT(sc);
+
+	if (port->dead)
+		return;
+	port->dead = 1;
+	device_printf(sc->sc_dev, "port %d: connection to %s lost\n",
+	    port->index, port->host);
+	taskqueue_enqueue(taskqueue_thread, &port->death_task);
 }
 
 void

@@ -16,6 +16,7 @@
 #include <sys/sx.h>
 #include <sys/condvar.h>
 #include <sys/queue.h>
+#include <sys/_task.h>
 
 #include <dev/usb/usb.h>
 #include <dev/usb/usbdi.h>
@@ -143,6 +144,14 @@ struct vhci_port {
 	uint8_t		tx_running;
 	uint8_t		rx_running;
 	uint8_t		disconnecting;
+
+	/*
+	 * Set when a transport thread gives up on the connection.  The
+	 * threads cannot tear their own port down - releasing it waits
+	 * for them to exit - so they hand that to a task instead.
+	 */
+	uint8_t		dead;
+	struct task	death_task;
 };
 
 union vhci_hub_temp {
@@ -189,5 +198,6 @@ extern const struct usb_pipe_methods vhci_pipe_methods;
 
 int		vhci_session_start(struct vhci_port *);
 void		vhci_session_stop(struct vhci_port *);
+void		vhci_session_died(struct vhci_port *);
 
 #endif /* !_VHCI_H_ */

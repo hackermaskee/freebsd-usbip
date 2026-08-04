@@ -18,6 +18,12 @@
  *
  *	./bulk_test              # the emulated device
  *	./bulk_test 0525 a4a0    # Linux's g_zero gadget
+ *	./bulk_test loop         # repeat until something fails
+ *
+ * The loop form keeps the device open across iterations, so that a
+ * connection lost while it runs is lost with a transfer outstanding.
+ * That is the case worth testing: completion has to be handed to the
+ * thread still holding the transfer rather than done underneath it.
  */
 
 #include <errno.h>
@@ -229,14 +235,21 @@ main(int argc, char **argv)
 {
 	libusb_device_handle *dh;
 	int vendor = TEST_VENDOR, product = TEST_PRODUCT;
+	int looping = 0;
 	int error;
+
+	if (argc >= 2 && strcmp(argv[argc - 1], "loop") == 0) {
+		looping = 1;
+		argc--;
+	}
 
 	/* Point the test at another device, e.g. Linux's g_zero gadget. */
 	if (argc == 3) {
 		vendor = (int)strtol(argv[1], NULL, 16);
 		product = (int)strtol(argv[2], NULL, 16);
 	} else if (argc != 1) {
-		fprintf(stderr, "usage: %s [vendor product]\n", argv[0]);
+		fprintf(stderr, "usage: %s [vendor product] [loop]\n",
+		    argv[0]);
 		return (1);
 	}
 
@@ -276,24 +289,26 @@ main(int argc, char **argv)
 	}
 
 	printf("bulk loopback through USB/IP:\n");
-	/*
-	 * Sizes chosen around the 512 byte max packet and the driver's
-	 * 64 KiB staging buffer, so both the single-chunk and the
-	 * multi-chunk paths get used, including an exact multiple of
-	 * the packet size.
-	 */
-	loopback(dh, 1);
-	loopback(dh, 64);
-	loopback(dh, 512);
-	loopback(dh, 513);
-	loopback(dh, 4096);
-	loopback(dh, 65536);
-	loopback(dh, 100000);
+	do {
+		/*
+		 * Sizes chosen around the 512 byte max packet and the
+		 * driver's 64 KiB staging buffer, so both the
+		 * single-chunk and the multi-chunk paths get used,
+		 * including an exact multiple of the packet size.
+		 */
+		loopback(dh, 1);
+		loopback(dh, 64);
+		loopback(dh, 512);
+		loopback(dh, 513);
+		loopback(dh, 4096);
+		loopback(dh, 65536);
+		loopback(dh, 100000);
 
-	if (ep_intr_in != 0)
-		interrupt_reads(dh, 32);
-	else
-		printf("  (no interrupt endpoint on this device)\n");
+		if (ep_intr_in != 0)
+			interrupt_reads(dh, 32);
+		else if (!looping)
+			printf("  (no interrupt endpoint on this device)\n");
+	} while (looping && failures == 0);
 
 	libusb_release_interface(dh, intf_number);
 	libusb_close(dh);

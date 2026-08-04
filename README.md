@@ -31,10 +31,11 @@ enumerates and control, bulk and interrupt transfers all work.
 - **M2 done**: control, bulk and interrupt transfers, verified end to
   end. Bulk round trips are byte-exact from 1 byte to 100 KB, spanning
   the max packet size and the driver's staging buffer.
-- **M3 mostly done**: interoperability against the real Linux `usbipd`
+- **M3 done**: interoperability against the real Linux `usbipd`
   confirmed, serving a `g_zero` gadget over `usbip-vudc`. Bulk round
-  trips are byte-exact from 1 byte to 100 KB. Error and disconnect
-  paths still need deliberate testing.
+  trips are byte-exact from 1 byte to 100 KB. A server that dies, with
+  or without transfers outstanding, takes the device away cleanly and
+  frees the port for reuse.
 - M4: isochronous, polish, man pages.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.
@@ -55,6 +56,7 @@ Everything below runs without USB hardware.
 sudo tools/smoke-test.sh    # does the driver load and the root hub appear?
 sudo tools/race-test.sh     # is unloading during enumeration refused?
 sudo tools/attach-test.sh   # attach an emulated device and move data
+sudo tools/error-test.sh    # what happens when the server dies
 ```
 
 To test against the canonical implementation rather than our own
