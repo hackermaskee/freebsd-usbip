@@ -68,6 +68,28 @@ than anything USB/IP-specific, and it is carried correctly, but it is
 worth knowing that passing against `fake_usbipd.py` does not prove a
 transfer size is safe.
 
+## Input the driver refuses
+
+Everything after the hand-off is parsed in kernel context from a socket,
+so it is untrusted. `tools/hostile-test.sh` drives each of these.
+Rejecting them means dropping the session, which takes the device away
+and frees the port.
+
+- A command field that is not one of the four we know.
+- `actual_length` beyond `VHCI_MAX_XFER_LEN`, or with the sign bit set.
+- `actual_length` larger than the transfer asked for. There is nowhere
+  to put the excess, and believing it would leave us out of step with
+  the stream.
+- A reply whose sequence number is neither in flight nor recorded as
+  cancelled, since without that record we cannot know whether a payload
+  follows it.
+- A truncated header, or bytes that do not parse as one.
+
+Two things are deliberately *not* treated as fatal, because they are
+odd rather than wrong: a `USBIP_RET_UNLINK` matching nothing, which is
+the normal outcome of a race we already resolved, and a server that
+simply stops answering, which the transfer timeout handles.
+
 ## To verify on the wire (tcpdump against Linux, milestone M2)
 
 - **`number_of_packets` for non-ISO transfers.** The spec says

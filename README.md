@@ -57,6 +57,7 @@ sudo tools/smoke-test.sh    # does the driver load and the root hub appear?
 sudo tools/race-test.sh     # is unloading during enumeration refused?
 sudo tools/attach-test.sh   # attach an emulated device and move data
 sudo tools/error-test.sh    # what happens when the server dies
+sudo tools/hostile-test.sh  # what happens when the server lies
 ```
 
 To test against the canonical implementation rather than our own

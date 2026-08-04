@@ -761,14 +761,11 @@ vhci_rx_complete(struct vhci_port *port, struct vhci_urb *urb,
 		remaining -= flen;
 	}
 
-	/* The server sent more than we asked for; discard the excess. */
-	if (is_in && remaining > 0) {
-		VHCI_UNLOCK(sc);
-		error = vhci_sock_drain(port, remaining);
-		VHCI_LOCK(sc);
-		if (error != 0)
-			return (error);
-	}
+	/*
+	 * Nothing is left over: the caller rejects any reply longer than
+	 * the transfer.  If that check is ever relaxed, the excess has to
+	 * be drained here or the stream loses its framing.
+	 */
 	return (0);
 }
 
@@ -822,6 +819,21 @@ vhci_rx_ret_submit(struct vhci_port *port, const uint8_t *hdr)
 			actual_length = 0;
 		VHCI_UNLOCK(sc);
 		return (vhci_sock_drain(port, actual_length));
+	}
+
+	/*
+	 * A reply may not carry more than the transfer asked for.  There
+	 * is nowhere to put the excess, and believing it would leave the
+	 * stream out of step with what we think is on it, so treat it as
+	 * the protocol violation it is and drop the session.
+	 */
+	if (actual_length > vhci_data_length(urb->xfer)) {
+		device_printf(sc->sc_dev,
+		    "port %d: reply for sequence %u carries %u bytes, "
+		    "more than the %u requested\n", port->index, seqnum,
+		    actual_length, vhci_data_length(urb->xfer));
+		VHCI_UNLOCK(sc);
+		return (EPROTO);
 	}
 
 	/*
