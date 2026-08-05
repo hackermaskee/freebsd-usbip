@@ -103,8 +103,13 @@ simply stops answering, which the transfer timeout handles.
   they need translating to and from `usb_error_t`. Confirm the mapping
   for stall (-EPIPE) and short reads (-EREMOTEIO with SHORT_NOT_OK).
 - **ISO packet descriptor layout** is not spelled out in the spec text;
-  we assume offset/length/actual_length/status, 4 bytes each. Verify
-  before implementing M4.
+  we assume offset/length/actual_length/status, 4 bytes each. This is
+  the one field layout that cannot be settled by reading the
+  documentation, so `tools/linux-iso-capture.sh` runs Linux against
+  itself over loopback - its own `usbipd` serving a UAC gadget, its own
+  `vhci-hcd` attaching to it - and captures what the canonical
+  implementation actually emits. Observation only; no GPL source is
+  read.
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
 - **`interval` units.** We send the transfer's interval in

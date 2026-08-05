@@ -16,6 +16,11 @@ check: proto_test
 bulk_test: bulk_test.c
 	$(CC) $(CFLAGS) -I/usr/include -o bulk_test bulk_test.c -lusb
 
+# Also builds on Linux, where it is used to make the canonical usbip
+# client emit isochronous traffic for capture: cc ... -lusb-1.0
+iso_probe: iso_probe.c
+	$(CC) $(CFLAGS) -o iso_probe iso_probe.c -lusb
+
 proto_test: proto_test.o $(LIBOBJ)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o proto_test proto_test.o $(LIBOBJ)
 
@@ -27,6 +32,6 @@ $(LIBOBJ):
 	$(MAKE) -C ../usr.sbin/usbip libusbip/usbip_net.o
 
 clean:
-	rm -f proto_test proto_test.o bulk_test
+	rm -f proto_test proto_test.o bulk_test iso_probe
 
 .PHONY: all check clean
