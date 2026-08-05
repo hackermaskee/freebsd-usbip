@@ -78,11 +78,16 @@ sudo tools/hostile-test.sh  # what happens when the server lies
 ```
 
 To test against the canonical implementation rather than our own
-server, on a Linux machine:
+server, on a **separate** Linux machine:
 
 ```sh
-sudo tools/linux-vudc-server.sh
+sudo tools/linux-vudc-server.sh          # bulk, via the g_zero gadget
+sudo tools/linux-iso-server.sh start     # isochronous, via g_audio
 ```
+
+Never attach a machine to a device it is itself exporting: the client
+and server drivers end up in the same kernel waiting on each other
+through a loopback socket, and it hangs.
 
 then from FreeBSD:
 

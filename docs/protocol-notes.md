@@ -105,11 +105,17 @@ simply stops answering, which the transfer timeout handles.
 - **ISO packet descriptor layout** is not spelled out in the spec text;
   we assume offset/length/actual_length/status, 4 bytes each. This is
   the one field layout that cannot be settled by reading the
-  documentation, so `tools/linux-iso-capture.sh` runs Linux against
-  itself over loopback - its own `usbipd` serving a UAC gadget, its own
-  `vhci-hcd` attaching to it - and captures what the canonical
-  implementation actually emits. Observation only; no GPL source is
-  read.
+  documentation, so `tools/linux-iso-server.sh` exports a UAC gadget
+  from a real Linux `usbipd` and captures the traffic, letting the
+  descriptor be read off the wire. Observation only; no GPL source is
+  read. Because `CMD_SUBMIT` and `RET_SUBMIT` carry the same structure,
+  seeing the server's replies settles the layout for both directions.
+
+  **The client must be a different machine.** Attaching a host to a
+  device it is itself exporting puts `usbip-vudc` and `vhci-hcd` in the
+  same kernel, each waiting on the other through a loopback socket, and
+  hangs the machine hard enough to need the power switch. This was
+  found the hard way.
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
 - **`interval` units.** We send the transfer's interval in
