@@ -102,7 +102,6 @@ simply stops answering, which the transfer timeout handles.
 - **`status` values.** Negative Linux errno numbers cross the wire, so
   they need translating to and from `usb_error_t`. Confirm the mapping
   for stall (-EPIPE) and short reads (-EREMOTEIO with SHORT_NOT_OK).
-- **`interval` units.** See below; still unconverted.
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
 - **`interval` units.** We send the transfer's interval in
