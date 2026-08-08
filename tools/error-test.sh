@@ -94,15 +94,22 @@ if [ -x "$BULK" ]; then
 	wait $bulkpid 2>/dev/null
 	rc=$?
 
-	if [ $rc -eq 0 ]; then
-		bad "bulk_test exited cleanly; it was never interrupted"
-	elif grep -q '^FAIL.*byte' /tmp/bulk_during_kill.log; then
+	# Every transfer the test does reports through CHECK, so any FAIL
+	# line means a transfer was outstanding when the server died.
+	# Matching on "byte" alone missed the interrupt reads.
+	if grep -qE '^FAIL.*(byte|interrupt read)' \
+	    /tmp/bulk_during_kill.log; then
 		ok "an outstanding transfer failed rather than hanging"
-		grep -m1 '^FAIL.*byte' /tmp/bulk_during_kill.log |
-		    sed 's/^/      /'
+		grep -m1 -E '^FAIL.*(byte|interrupt read)' \
+		    /tmp/bulk_during_kill.log | sed 's/^/      /'
+	elif [ $rc -eq 0 ]; then
+		bad "bulk_test exited cleanly; it was never interrupted"
+	elif [ $rc -gt 128 ]; then
+		bad "bulk_test died on signal $((rc - 128)) rather than failing"
+		tail -3 /tmp/bulk_during_kill.log | sed 's/^/      /'
 	else
-		bad "bulk_test failed, but not inside a transfer"
-		tail -2 /tmp/bulk_during_kill.log | sed 's/^/      /'
+		bad "bulk_test exited $rc without reporting a failed transfer"
+		tail -3 /tmp/bulk_during_kill.log | sed 's/^/      /'
 	fi
 
 	sleep 4

@@ -253,6 +253,14 @@ main(int argc, char **argv)
 		return (1);
 	}
 
+	/*
+	 * Line buffer the log.  This test is expected to be killed
+	 * partway through, and a block buffered stdout loses whatever
+	 * had not been flushed - which once made an interrupted run look
+	 * like it had stopped somewhere it had not.
+	 */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	error = libusb_init(NULL);
 	if (error != 0) {
 		fprintf(stderr, "libusb_init: %s\n", libusb_strerror(error));
