@@ -35,13 +35,17 @@ if [ "$(uname -s)" != Linux ]; then
 	exit 1
 fi
 
+#
+# Deliberately does not unload the modules.  Removing g_audio while
+# usbip-vudc still references it leaves both stuck at a refcount of -1
+# and hangs the next modprobe, which needs a reboot to clear.  Nothing
+# is gained by unloading them: leaving the gadget bound is harmless, and
+# start below is happy to find it already there.
+#
 teardown() {
 	pkill tcpdump 2>/dev/null || true
 	pkill usbipd 2>/dev/null || true
 	sleep 1
-	modprobe -r g_audio 2>/dev/null || true
-	modprobe -r usbip-vudc 2>/dev/null || true
-	modprobe -r usbip-core 2>/dev/null || true
 }
 
 case "$1" in
@@ -75,9 +79,15 @@ if lsmod | grep -q '^vhci_hcd'; then
 fi
 
 echo "== gadget with isochronous endpoints =="
-modprobe usbip-vudc num=1
-modprobe g_audio
 udc=/sys/class/udc/usbip-vudc.0
+# Idempotent: a previous run leaves the gadget bound, and loading it
+# again would fail with EBUSY.
+if [ ! -d "$udc" ]; then
+	modprobe usbip-vudc num=1
+fi
+if [ "$(cat $udc/function 2>/dev/null)" != g_audio ]; then
+	modprobe g_audio
+fi
 printf '    %s: function=%s state=%s\n' "$(basename $udc)" \
     "$(cat $udc/function 2>/dev/null)" "$(cat $udc/state 2>/dev/null)"
 

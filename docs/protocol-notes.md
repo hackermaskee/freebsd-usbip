@@ -102,24 +102,47 @@ simply stops answering, which the transfer timeout handles.
 - **`status` values.** Negative Linux errno numbers cross the wire, so
   they need translating to and from `usb_error_t`. Confirm the mapping
   for stall (-EPIPE) and short reads (-EREMOTEIO with SHORT_NOT_OK).
-- **ISO packet descriptor layout** is not spelled out in the spec text;
-  we assume offset/length/actual_length/status, 4 bytes each. This is
-  the one field layout that cannot be settled by reading the
-  documentation, so `tools/linux-iso-server.sh` exports a UAC gadget
-  from a real Linux `usbipd` and captures the traffic, letting the
-  descriptor be read off the wire. Observation only; no GPL source is
-  read. Because `CMD_SUBMIT` and `RET_SUBMIT` carry the same structure,
-  seeing the server's replies settles the layout for both directions.
-
-  **The client must be a different machine.** Attaching a host to a
-  device it is itself exporting puts `usbip-vudc` and `vhci-hcd` in the
-  same kernel, each waiting on the other through a loopback socket, and
-  hangs the machine hard enough to need the power switch. This was
-  found the hard way.
+- **`interval` units.** See below; still unconverted.
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
 - **`interval` units.** We send the transfer's interval in
   milliseconds, which is what the FreeBSD stack works in. Linux URBs
   express it in frames or microframes depending on speed, so this
-  probably needs converting before interrupt transfers are trustworthy
-  (milestone M3).
+  probably needs converting. Interrupt transfers work regardless; the
+  polling rate may not be honoured exactly.
+
+## Isochronous: what is settled and what is not
+
+The packet descriptor layout is the one thing the documentation does
+not describe. `tools/linux-iso-server.sh` exports a `g_audio` gadget
+from a real Linux `usbipd`, and `tools/decode-capture.py` reads the
+resulting capture.
+
+**The client must be a different machine.** Attaching a host to a
+device it is itself exporting puts `usbip-vudc` and `vhci-hcd` in the
+same kernel, each waiting on the other through a loopback socket, and
+hangs the machine hard enough to need the power switch. Found the hard
+way.
+
+Settled by observation:
+
+- Our `CMD_SUBMIT` is **accepted**. It carries `number_of_packets`, the
+  payload, then one 16-byte descriptor per packet of
+  offset/length/actual_length/status, big-endian. A wrong layout would
+  desynchronise the server's parser and corrupt everything after it;
+  instead the following `RET_UNLINK` arrives correctly framed, so the
+  framing is right.
+- **`URB_ISO_ASAP` (0x0002) is required.** Without it the server takes
+  `start_frame` literally, and zero is always in the past.
+
+Not settled:
+
+- **What a server's isochronous `RET_SUBMIT` looks like.** Getting one
+  requires a server that actually completes isochronous URBs.
+  `usbip-vudc` does not: it accepts the submission, logs nothing, and
+  never answers, and the gadget's own ALSA side fails with EIO. So our
+  receive path is written from the same assumption as the transmit
+  path rather than from observation, and is untested.
+
+  Settling it needs a server exporting a **real** device with
+  isochronous endpoints, via `usbip-host` rather than `usbip-vudc`.

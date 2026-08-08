@@ -36,11 +36,12 @@ enumerates and control, bulk and interrupt transfers all work.
   trips are byte-exact from 1 byte to 100 KB. A server that dies, with
   or without transfers outstanding, takes the device away cleanly and
   frees the port for reuse.
-- M4: isochronous transfers. Not started, and worth knowing before it
-  is: the protocol documentation does not spell out the isochronous
-  packet descriptor layout, so unlike everything above it cannot be
-  settled by reading the spec. It needs checking against a real
-  implementation carrying real isochronous traffic.
+- **M4 partial**: isochronous transfers are implemented, and the
+  submission format is confirmed acceptable to a real Linux `usbipd`.
+  The reply path is *not* verified: `usbip-vudc` never completes an
+  isochronous URB, so no server-generated packet descriptor has been
+  seen. Verifying it needs a server exporting a real device with
+  isochronous endpoints. See `docs/protocol-notes.md`.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.
 

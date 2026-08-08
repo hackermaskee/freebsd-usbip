@@ -71,13 +71,11 @@ vhci_ep_init(struct usb_device *udev, struct usb_endpoint_descriptor *edesc,
 	case UE_CONTROL:
 	case UE_BULK:
 	case UE_INTERRUPT:
+	case UE_ISOCHRONOUS:
 		ep->methods = &vhci_pipe_methods;
 		break;
 	default:
-		/*
-		 * Leaving methods NULL marks the endpoint unsupported.
-		 * Isochronous support is milestone M4.
-		 */
+		/* Leaving methods NULL marks the endpoint unsupported. */
 		break;
 	}
 }

@@ -178,6 +178,39 @@ vhci_is_in(const struct usb_xfer *xfer)
 	return ((xfer->endpointno & UE_DIR_IN) != 0);
 }
 
+static int
+vhci_is_iso(const struct usb_xfer *xfer)
+{
+
+	return (xfer->flags_int.isochronous_xfr != 0);
+}
+
+/*
+ * Isochronous transfers are laid out differently by the USB stack: the
+ * frames are packets within a single buffer, rather than a buffer each.
+ * So a packet lives at its cumulative offset in frbuffers[0], while
+ * every other transfer type has one page cache per frame.
+ */
+static uint32_t
+vhci_frame_offset(const struct usb_xfer *xfer, uint8_t frame)
+{
+	uint32_t off = 0;
+	uint8_t i;
+
+	if (!vhci_is_iso(xfer))
+		return (0);
+	for (i = 0; i < frame; i++)
+		off += xfer->frlengths[i];
+	return (off);
+}
+
+static struct usb_page_cache *
+vhci_frame_buffer(struct usb_xfer *xfer, uint8_t frame)
+{
+
+	return (xfer->frbuffers + (vhci_is_iso(xfer) ? 0 : frame));
+}
+
 /* Translate a USB/IP status, which is a negative Linux errno. */
 static usb_error_t
 vhci_status_to_usb_error(int32_t status)
@@ -480,6 +513,24 @@ vhci_pipe_start(struct usb_xfer *xfer)
 		return;
 	}
 
+	/*
+	 * An isochronous reply cannot be placed until its packet
+	 * descriptors have been read, and those come after the payload,
+	 * so the payload has to be held in the staging buffer meanwhile.
+	 * Audio and video packets are far below this; the limit only
+	 * exists so the buffer can be a fixed size.
+	 */
+	if (vhci_is_iso(xfer) &&
+	    (vhci_data_length(xfer) > VHCI_STAGE_SIZE ||
+	    xfer->nframes > VHCI_MAX_ISO_PACKETS)) {
+		device_printf(sc->sc_dev,
+		    "port %d: isochronous transfer of %u bytes in %u packets "
+		    "is too large\n", port->index, vhci_data_length(xfer),
+		    xfer->nframes);
+		vhci_device_done(xfer, USB_ERR_BAD_BUFSIZE);
+		return;
+	}
+
 	urb->xfer = xfer;
 	urb->seqnum = vhci_next_seqnum(port);
 	urb->aborted = 0;
@@ -517,6 +568,12 @@ vhci_put_header(uint8_t *buf, uint32_t command, uint32_t seqnum,
 	be32enc(buf + 16, ep);
 }
 
+static int	vhci_rx_iso(struct vhci_port *, struct vhci_urb *, uint32_t);
+static int	vhci_tx_payload(struct vhci_port *, struct usb_xfer *,
+		    uint8_t);
+static int	vhci_tx_iso_descriptors(struct vhci_port *,
+		    struct usb_xfer *);
+
 /*
  * Send one CMD_SUBMIT.  Called with the bus lock held; drops it around
  * each socket write.  Returns a socket error, or 0.
@@ -528,7 +585,7 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	struct usb_xfer *xfer = urb->xfer;
 	uint32_t flags, datalen;
 	uint8_t *hdr = port->tx_buf;
-	uint8_t i, first;
+	uint8_t first;
 	int is_in, error;
 
 	VHCI_LOCK_ASSERT(sc);
@@ -545,6 +602,14 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	flags = 0;
 	if (!is_in && xfer->flags.force_short_xfer)
 		flags |= USBIP_URB_ZERO_PACKET;
+	/*
+	 * Isochronous transfers must say "start as soon as you can".
+	 * Without this the server takes start_frame literally, and a
+	 * frame number of zero is always in the past, so the transfer is
+	 * never scheduled and never answered.
+	 */
+	if (vhci_is_iso(xfer))
+		flags |= USBIP_URB_ISO_ASAP;
 
 	memset(hdr, 0, 48);
 	vhci_put_header(hdr, USBIP_CMD_SUBMIT, urb->seqnum, port->devid,
@@ -553,7 +618,8 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	be32enc(hdr + 20, flags);
 	be32enc(hdr + 24, datalen);
 	be32enc(hdr + 28, 0);				/* start_frame */
-	be32enc(hdr + 32, (uint32_t)USBIP_NUMBER_OF_PACKETS_NON_ISO);
+	be32enc(hdr + 32, vhci_is_iso(xfer) ? xfer->nframes :
+	    (uint32_t)USBIP_NUMBER_OF_PACKETS_NON_ISO);
 	be32enc(hdr + 36, xfer->interval);
 	if (xfer->flags_int.control_xfr)
 		usbd_copy_out(xfer->frbuffers + 0, 0, hdr + 40, 8);
@@ -561,8 +627,61 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	VHCI_UNLOCK(sc);
 	error = vhci_sock_send(port->so, hdr, 48);
 	VHCI_LOCK(sc);
-	if (error != 0 || is_in || datalen == 0)
+	if (error != 0)
 		return (error);
+	if (!is_in && datalen != 0) {
+		error = vhci_tx_payload(port, xfer, first);
+		if (error != 0)
+			return (error);
+	}
+	if (vhci_is_iso(xfer))
+		return (vhci_tx_iso_descriptors(port, xfer));
+	return (0);
+}
+
+/*
+ * The packet descriptors that follow an isochronous submission.  They
+ * describe where each packet sits in the transfer buffer and how long
+ * it is; the server fills in the actual length and status when it
+ * replies.
+ */
+static int
+vhci_tx_iso_descriptors(struct vhci_port *port, struct usb_xfer *xfer)
+{
+	struct vhci_softc *sc = port->sc;
+	uint8_t *buf = port->tx_buf;
+	uint32_t off = 0;
+	uint8_t i;
+	int error;
+
+	VHCI_LOCK_ASSERT(sc);
+
+	for (i = 0; i < xfer->nframes; i++) {
+		uint8_t *d = buf + (i * 16);
+
+		be32enc(d + 0, off);			/* offset */
+		be32enc(d + 4, xfer->frlengths[i]);	/* length */
+		be32enc(d + 8, 0);			/* actual_length */
+		be32enc(d + 12, 0);			/* status */
+		off += xfer->frlengths[i];
+	}
+
+	VHCI_UNLOCK(sc);
+	error = vhci_sock_send(port->so, buf, (size_t)xfer->nframes * 16);
+	VHCI_LOCK(sc);
+
+	return (error);
+}
+
+/* Copy the outgoing payload out of the transfer and onto the socket. */
+static int
+vhci_tx_payload(struct vhci_port *port, struct usb_xfer *xfer, uint8_t first)
+{
+	struct vhci_softc *sc = port->sc;
+	uint8_t i;
+	int error;
+
+	VHCI_LOCK_ASSERT(sc);
 
 	/*
 	 * Outgoing payload, one frame at a time, in staging-sized bites.
@@ -572,6 +691,7 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	 * is deferred while urb->busy is set.
 	 */
 	for (i = first; i < xfer->nframes; i++) {
+		uint32_t base = vhci_frame_offset(xfer, i);
 		uint32_t off = 0, flen = xfer->frlengths[i];
 
 		while (off < flen) {
@@ -579,7 +699,7 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 
 			if (n > VHCI_STAGE_SIZE)
 				n = VHCI_STAGE_SIZE;
-			usbd_copy_out(xfer->frbuffers + i, off,
+			usbd_copy_out(vhci_frame_buffer(xfer, i), base + off,
 			    port->tx_buf, n);
 
 			VHCI_UNLOCK(sc);
@@ -702,6 +822,83 @@ vhci_tx_thread(void *arg)
  */
 
 /*
+ * Complete an isochronous transfer.
+ *
+ * The packet descriptors arrive after the payload, and they are what
+ * says where each packet belongs, so the payload has to be held
+ * somewhere until they have been read.  That is why an isochronous
+ * transfer is limited to what the staging buffer can hold; audio and
+ * video packets are small enough that the limit is not a real one.
+ *
+ * The server sends only the bytes that were actually transferred,
+ * concatenated, while the descriptors give offsets into the transfer's
+ * own buffer.  So the payload is scattered rather than copied straight
+ * in.
+ */
+static int
+vhci_rx_iso(struct vhci_port *port, struct vhci_urb *urb,
+    uint32_t actual_length)
+{
+	struct vhci_softc *sc = port->sc;
+	struct usb_xfer *xfer = urb->xfer;
+	uint8_t *desc = port->rx_buf;
+	uint8_t *data = port->rx_buf + VHCI_STAGE_SIZE;
+	uint32_t npackets = xfer->nframes;
+	uint32_t consumed = 0;
+	uint8_t i;
+	int error;
+
+	VHCI_LOCK_ASSERT(sc);
+
+	if (actual_length > VHCI_STAGE_SIZE) {
+		device_printf(sc->sc_dev,
+		    "port %d: isochronous reply of %u bytes is too large\n",
+		    port->index, actual_length);
+		return (EPROTO);
+	}
+
+	VHCI_UNLOCK(sc);
+	error = vhci_sock_recv(port->so, data, actual_length);
+	if (error == 0)
+		error = vhci_sock_recv(port->so, desc,
+		    (size_t)npackets * 16);
+	VHCI_LOCK(sc);
+	if (error != 0)
+		return (error);
+
+	for (i = 0; i < npackets; i++) {
+		const uint8_t *d = desc + (i * 16);
+		uint32_t off = be32dec(d + 0);
+		uint32_t alen = be32dec(d + 8);
+
+		if (alen > xfer->frlengths[i] ||
+		    consumed + alen > actual_length) {
+			device_printf(sc->sc_dev,
+			    "port %d: isochronous packet %u claims %u bytes\n",
+			    port->index, i, alen);
+			return (EPROTO);
+		}
+		if (!urb->aborted && alen != 0) {
+			usbd_copy_in(xfer->frbuffers + 0, off,
+			    data + consumed, alen);
+		}
+		consumed += alen;
+
+		/*
+		 * A packet that failed comes back with a length of zero,
+		 * which is how the USB stack expects to hear about it.
+		 * One bad packet does not fail the whole transfer.
+		 */
+		if (!urb->aborted)
+			xfer->frlengths[i] = alen;
+	}
+	if (!urb->aborted)
+		xfer->aframes = xfer->nframes;
+
+	return (0);
+}
+
+/*
  * Account for a completed transfer: spread actual_length across the
  * data frames, reading the payload off the socket for an IN transfer.
  * Runs with the bus lock held and drops it around each read.
@@ -717,6 +914,9 @@ vhci_rx_complete(struct vhci_port *port, struct vhci_urb *urb,
 	int is_in, error;
 
 	VHCI_LOCK_ASSERT(sc);
+
+	if (vhci_is_iso(xfer))
+		return (vhci_rx_iso(port, urb, actual_length));
 
 	is_in = vhci_is_in(xfer);
 	first = vhci_first_data_frame(xfer);
@@ -939,7 +1139,12 @@ vhci_session_start(struct vhci_port *port)
 	int error;
 
 	port->tx_buf = malloc(VHCI_STAGE_SIZE, M_VHCI_BUF, M_WAITOK);
-	port->rx_buf = malloc(VHCI_STAGE_SIZE, M_VHCI_BUF, M_WAITOK);
+	/*
+	 * Twice the staging size: an isochronous reply has to hold the
+	 * payload and the packet descriptors that describe where it goes
+	 * at the same time, because the descriptors arrive last.
+	 */
+	port->rx_buf = malloc(2 * VHCI_STAGE_SIZE, M_VHCI_BUF, M_WAITOK);
 
 	cv_init(&port->tx_cv, "vhcitx");
 	cv_init(&port->exit_cv, "vhciex");
