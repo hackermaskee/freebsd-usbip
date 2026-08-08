@@ -52,14 +52,20 @@ struct target {
 
 /*
  * Find an alternate setting with an isochronous endpoint.  Audio and
- * video gadgets put their streaming endpoints on a non-zero alternate
+ * video devices put their streaming endpoints on a non-zero alternate
  * setting and leave setting 0 empty, which is why this cannot just look
  * at the active configuration's first interface.
+ *
+ * An IN endpoint is preferred.  Only a reply to an IN transfer carries
+ * data and packet descriptors back, and those descriptors are the whole
+ * reason for running this against a real device.
  */
 static int
 find_iso(libusb_device *dev, struct target *t)
 {
 	struct libusb_config_descriptor *cfg;
+	struct target found;
+	int have = 0;
 	int error, i, j, k;
 
 	error = libusb_get_active_config_descriptor(dev, &cfg);
@@ -87,22 +93,31 @@ find_iso(libusb_device *dev, struct target *t)
 				if (ep->wMaxPacketSize == 0)
 					continue;
 
-				t->interface = alt->bInterfaceNumber;
-				t->altsetting = alt->bAlternateSetting;
-				t->endpoint = ep->bEndpointAddress;
+				found.interface = alt->bInterfaceNumber;
+				found.altsetting = alt->bAlternateSetting;
+				found.endpoint = ep->bEndpointAddress;
 				/* Low 11 bits; the rest is the multiplier. */
-				t->maxp = ep->wMaxPacketSize & 0x7FF;
-				t->is_in = (ep->bEndpointAddress &
+				found.maxp = ep->wMaxPacketSize & 0x7FF;
+				found.is_in = (ep->bEndpointAddress &
 				    LIBUSB_ENDPOINT_IN) != 0;
-				libusb_free_config_descriptor(cfg);
-				return (0);
+
+				if (!have || (found.is_in && !t->is_in)) {
+					*t = found;
+					have = 1;
+				}
+				if (t->is_in)
+					goto done;
 			}
 		}
 	}
 
+done:
 	libusb_free_config_descriptor(cfg);
-	fprintf(stderr, "no isochronous endpoint on this device\n");
-	return (-1);
+	if (!have) {
+		fprintf(stderr, "no isochronous endpoint on this device\n");
+		return (-1);
+	}
+	return (0);
 }
 
 static void LIBUSB_CALL
