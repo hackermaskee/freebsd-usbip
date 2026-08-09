@@ -17,7 +17,7 @@ reference.)
 | `sys/dev/vhci/` | `vhci(4)`: virtual USB host controller kernel driver. Plugs into the FreeBSD usb(4) stack, speaks the USB/IP URB phase over a TCP socket handed off from userland. |
 | `sys/modules/vhci/` | kmod build glue (FreeBSD only, `bsd.kmod.mk`). |
 | `usr.sbin/usbip/` | `usbip(8)`: `list` / `attach` / `detach` / `port`. Performs the OP_REQ_DEVLIST / OP_REQ_IMPORT handshake in userland, then passes the connected socket to `vhci(4)`. |
-| `tests/` | Protocol golden tests (`proto_test`), a USB/IP server that emulates a device in software (`fake_usbipd.py`), and a transfer exerciser (`bulk_test.c`). No hardware or privileges needed. |
+| `tests/` | Protocol golden tests (`proto_test`), a USB/IP server that emulates a device in software (`fake_usbipd.py`) and one that lies (`hostile_usbipd.py`), and transfer exercisers (`bulk_test.c`, `iso_probe.c`). No hardware needed. |
 | `tools/` | Build and test helpers: `syntax-check.sh` type-checks the driver on a non-FreeBSD machine; `smoke-test.sh`, `race-test.sh` and `attach-test.sh` are the three things worth running on the target; `linux-vudc-server.sh` stands up a real Linux server for interop testing. |
 
 ## Status
@@ -36,12 +36,13 @@ enumerates and control, bulk and interrupt transfers all work.
   trips are byte-exact from 1 byte to 100 KB. A server that dies, with
   or without transfers outstanding, takes the device away cleanly and
   frees the port for reuse.
-- **M4 partial**: isochronous transfers are implemented, and the
-  submission format is confirmed acceptable to a real Linux `usbipd`.
-  The reply path is *not* verified: `usbip-vudc` never completes an
-  isochronous URB, so no server-generated packet descriptor has been
-  seen. Verifying it needs a server exporting a real device with
-  isochronous endpoints. See `docs/protocol-notes.md`.
+- **M4 partial**: isochronous transfers work end to end against our
+  own test server, packets landing at the right offsets, and the
+  submission format is accepted by a real Linux `usbipd`. What is still
+  unconfirmed is the *reply* format: no server available would complete
+  an isochronous URB, so no server-generated packet descriptor has been
+  observed and our receive path rests on the same assumption as the
+  transmit path. See `docs/protocol-notes.md`.
 - Later: server side (export FreeBSD devices), implemented in userland
   via ugen(4)/libusb.
 

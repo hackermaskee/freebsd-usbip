@@ -51,9 +51,21 @@ PRODUCT = 0x0001
 EP_BULK_IN = 1
 EP_BULK_OUT = 2
 EP_INTR_IN = 3
+EP_ISO_IN = 4
 BULK_MAXP = 512
 INTR_MAXP = 64
 INTR_LEN = 8
+ISO_MAXP = 192
+
+# bInterval on the interrupt endpoint; at high speed the stack turns
+# this into 2^(4-4) = 1 ms, which a Linux URB counts as 8 microframes.
+INTR_BINTERVAL = 4
+# On an isochronous endpoint bInterval is the exponent directly, so 1
+# means every microframe.  Deliberately different from the interrupt
+# endpoint's so the two are told apart in the log.
+ISO_BINTERVAL = 1
+
+NUM_INTERFACES = 2
 
 
 def le16(v):
@@ -68,14 +80,29 @@ DEVICE_DESC = (
     + bytes([1, 2, 3, 1])   # iManufacturer, iProduct, iSerial, bNumConfigurations
 )
 
-CONFIG_DESC = (
-    bytes([9, 0x02]) + le16(9 + 9 + 7 + 7 + 7)
-    + bytes([1, 1, 0, 0xC0, 0])       # 1 iface, cfg 1, self powered
-    + bytes([9, 0x04, 0, 0, 3, 0xFF, 0x00, 0x00, 0])
+# Interface 0 carries the bulk and interrupt endpoints.  Interface 1
+# holds the isochronous one on alternate setting 1, leaving setting 0
+# empty, which is how audio and video devices are arranged and what
+# makes the host issue SET_INTERFACE before streaming.
+_IFACE0 = (
+    bytes([9, 0x04, 0, 0, 3, 0xFF, 0x00, 0x00, 0])
     + bytes([7, 0x05, 0x80 | EP_BULK_IN, 0x02]) + le16(BULK_MAXP) + bytes([0])
     + bytes([7, 0x05, EP_BULK_OUT, 0x02]) + le16(BULK_MAXP) + bytes([0])
-    # Interrupt IN, bInterval 4 => 8 microframes => 1ms at high speed.
-    + bytes([7, 0x05, 0x80 | EP_INTR_IN, 0x03]) + le16(INTR_MAXP) + bytes([4])
+    + bytes([7, 0x05, 0x80 | EP_INTR_IN, 0x03]) + le16(INTR_MAXP)
+    + bytes([INTR_BINTERVAL])
+)
+_IFACE1_ALT0 = bytes([9, 0x04, 1, 0, 0, 0xFF, 0x00, 0x00, 0])
+_IFACE1_ALT1 = (
+    bytes([9, 0x04, 1, 1, 1, 0xFF, 0x00, 0x00, 0])
+    + bytes([7, 0x05, 0x80 | EP_ISO_IN, 0x01]) + le16(ISO_MAXP)
+    + bytes([ISO_BINTERVAL])
+)
+
+_CONFIG_BODY = _IFACE0 + _IFACE1_ALT0 + _IFACE1_ALT1
+CONFIG_DESC = (
+    bytes([9, 0x02]) + le16(9 + len(_CONFIG_BODY))
+    + bytes([2, 1, 0, 0xC0, 0])       # 2 ifaces, cfg 1, self powered
+    + _CONFIG_BODY
 )
 
 
@@ -97,7 +124,7 @@ def pack_udev():
     buf = struct.pack("256s32s", path, BUSID)
     buf += struct.pack(">III", BUSNUM, DEVNUM, SPEED_HIGH)
     buf += struct.pack(">HHH", VENDOR, PRODUCT, 0x0100)
-    buf += struct.pack("BBBBBB", 0xFF, 0x00, 0x00, 1, 1, 1)
+    buf += struct.pack("BBBBBB", 0xFF, 0x00, 0x00, 1, 1, NUM_INTERFACES)
     assert len(buf) == 312
     return buf
 
@@ -124,6 +151,7 @@ class Device:
         self.configuration = 0
         self.loopback = bytearray()
         self.intr_counter = 0
+        self.iso_counter = 0
 
     def control(self, setup, out_data, length):
         """Return (status, in_data) for a control transfer."""
@@ -183,6 +211,25 @@ class Device:
         del self.loopback[:take]
         return E_OK, data
 
+    def isochronous_in(self, packets):
+        """
+        Fill each requested packet with a recognisable pattern.
+
+        Only the bytes actually transferred go on the wire, packed
+        together; the descriptors say where each packet belongs in the
+        client's buffer.  Every packet is filled here, so the two
+        layouts happen to agree, but the client must not depend on it.
+        """
+        out = []
+        for i, (offset, length) in enumerate(packets):
+            # Every byte of packet i is i.  That way a client that
+            # scatters a packet to the wrong offset sees the wrong
+            # value, rather than data that merely looks plausible.
+            body = bytes([i & 0xFF]) * length
+            out.append((offset, length, body))
+        self.iso_counter += 1
+        return E_OK, out
+
     def interrupt_in(self, length):
         """A counter, so the client can tell one report from the next."""
         data = struct.pack("<Q", self.intr_counter)[:min(length, INTR_LEN)]
@@ -223,11 +270,33 @@ class Session:
 
             self.log(f"CMD_SUBMIT seq={seqnum} ep={ep} "
                      f"dir={'IN' if direction else 'OUT'} len={buflen} "
-                     f"flags={flags:#x} npkt={npackets}")
+                     f"flags={flags:#x} npkt={npackets} "
+                     f"interval={interval}")
 
             out_data = b""
             if direction == DIR_OUT and buflen > 0:
                 out_data = recv_exact(self.conn, buflen)
+
+            # Isochronous descriptors follow the payload, one per packet.
+            packets = None
+            if npackets > 0:
+                raw = recv_exact(self.conn, npackets * 16)
+                packets = []
+                for i in range(npackets):
+                    o, ln, _al, _st = struct.unpack(
+                        ">IIIi", raw[i * 16:(i + 1) * 16])
+                    packets.append((o, ln))
+                self.log(f"  {npackets} packets, first offset={packets[0][0]} "
+                         f"length={packets[0][1]}")
+
+            if packets is not None:
+                if direction == DIR_IN and ep == EP_ISO_IN:
+                    status, iso = self.dev.isochronous_in(packets)
+                else:
+                    self.log(f"  no isochronous endpoint {ep}, stalling")
+                    status, iso = E_PIPE, [(o, ln, b"") for o, ln in packets]
+                self.send_ret_iso(seqnum, status, iso)
+                continue
 
             if ep == 0:
                 status, in_data = self.dev.control(setup, out_data, buflen)
@@ -250,6 +319,26 @@ class Session:
             self.log(f"  -> RET_SUBMIT status={status} actual={actual}")
             self.send_ret_submit(seqnum, status, actual,
                                  in_data if direction == DIR_IN else b"")
+
+    def send_ret_iso(self, seqnum, status, iso):
+        """
+        Reply to an isochronous submission: the bytes actually
+        transferred, packed together, then a descriptor per packet
+        saying where each one belongs.
+        """
+        body = b"".join(body for (_o, _l, body) in iso)
+        hdr = struct.pack(">IIIII", RET_SUBMIT, seqnum, 0, 0, 0)
+        hdr += struct.pack(">iiiii", status, len(body), 0, len(iso), 0)
+        hdr += b"\x00" * 8
+        assert len(hdr) == 48
+
+        desc = b""
+        for (offset, length, body_i) in iso:
+            desc += struct.pack(">IIIi", offset, length, len(body_i),
+                                0 if status == E_OK else status)
+        self.log(f"  -> RET_SUBMIT seq={seqnum} status={status} "
+                 f"actual={len(body)} npkt={len(iso)}")
+        self.conn.sendall(hdr + body + desc)
 
     def send_ret_submit(self, seqnum, status, actual, payload):
         hdr = struct.pack(">IIIII", RET_SUBMIT, seqnum, 0, 0, 0)
@@ -274,7 +363,11 @@ class Session:
         if code == OP_REQ_DEVLIST:
             reply = op_common(OP_REP_DEVLIST) + struct.pack(">I", 1)
             reply += pack_udev()
-            reply += struct.pack("BBBB", 0xFF, 0x00, 0x00, 0)
+            # One descriptor per interface.  The count has to match the
+            # bNumInterfaces just sent, or the client waits for bytes
+            # that never arrive.
+            for _ in range(NUM_INTERFACES):
+                reply += struct.pack("BBBB", 0xFF, 0x00, 0x00, 0)
             self.conn.sendall(reply)
         elif code == OP_REQ_IMPORT:
             busid = recv_exact(self.conn, 32).rstrip(b"\x00")

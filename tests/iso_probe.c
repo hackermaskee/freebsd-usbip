@@ -39,6 +39,7 @@
 #define	NROUNDS		4
 
 static int completed;
+static int inflight;
 static int rounds;
 static int failures;
 
@@ -123,32 +124,69 @@ done:
 static void LIBUSB_CALL
 on_done(struct libusb_transfer *xfer)
 {
-	int shortp = 0, errp = 0, i;
+	int shortp = 0, errp = 0, misplaced = 0, i;
 
 	completed++;
 
 	for (i = 0; i < xfer->num_iso_packets; i++) {
 		struct libusb_iso_packet_descriptor *p =
 		    &xfer->iso_packet_desc[i];
+		unsigned char *data;
 
-		if (p->status != LIBUSB_TRANSFER_COMPLETED)
+		if (p->status != LIBUSB_TRANSFER_COMPLETED) {
 			errp++;
-		else if (p->actual_length < p->length)
+			continue;
+		}
+		if (p->actual_length < p->length) {
 			shortp++;
+			continue;
+		}
+
+		/*
+		 * tests/fake_usbipd.py fills every byte of packet i with
+		 * i, so this catches a packet delivered to the wrong
+		 * offset - which is the easiest thing to get wrong, since
+		 * the descriptors that say where each one goes arrive
+		 * after the data they describe.
+		 */
+		data = libusb_get_iso_packet_buffer_simple(xfer, i);
+		if (data != NULL && (data[0] != (unsigned char)i ||
+		    data[p->actual_length - 1] != (unsigned char)i))
+			misplaced++;
 	}
 
-	printf("  transfer %2d: status %d, %d packets, %d short, %d failed\n",
-	    completed, xfer->status, xfer->num_iso_packets, shortp, errp);
+	printf("  transfer %2d: status %d, %d packets, %d short, %d failed, "
+	    "%d misplaced\n", completed, xfer->status, xfer->num_iso_packets,
+	    shortp, errp, misplaced);
+
+	if (misplaced != 0 && completed == 1) {
+		/* Show what actually arrived, to tell a wrong offset
+		 * from data that never got written at all. */
+		printf("    first byte of each packet, expected 0,1,2...:");
+		for (i = 0; i < xfer->num_iso_packets; i++) {
+			unsigned char *d =
+			    libusb_get_iso_packet_buffer_simple(xfer, i);
+			printf(" %d", d != NULL ? d[0] : -1);
+		}
+		printf("\n    raw head of the buffer:");
+		for (i = 0; i < 8 && i < xfer->length; i++)
+			printf(" %02x", xfer->buffer[i]);
+		printf("\n");
+	}
+	if (misplaced != 0)
+		failures++;
 
 	if (xfer->status != LIBUSB_TRANSFER_COMPLETED &&
 	    xfer->status != LIBUSB_TRANSFER_CANCELLED)
 		failures++;
 
+	inflight--;
+
 	/* Keep the stream going for a while, then let it drain. */
-	if (rounds < NROUNDS) {
+	if (rounds < NROUNDS && libusb_submit_transfer(xfer) == 0) {
 		rounds++;
-		if (libusb_submit_transfer(xfer) == 0)
-			return;
+		inflight++;
+		return;
 	}
 	libusb_free_transfer(xfer);
 }
@@ -161,7 +199,7 @@ main(int argc, char **argv)
 	struct target t;
 	unsigned char *bufs[NTRANSFERS];
 	int vendor = DEFAULT_VENDOR, product = DEFAULT_PRODUCT;
-	int error, i, live, buflen;
+	int error, i, live, buflen, idle = 0;
 
 	if (argc == 3) {
 		vendor = (int)strtol(argv[1], NULL, 16);
@@ -243,18 +281,26 @@ main(int argc, char **argv)
 			failures++;
 		} else {
 			live++;
+			inflight++;
 		}
 	}
 	printf("submitted %d isochronous transfers of %d packets\n", live,
 	    NPACKETS);
 
-	while (completed < live + rounds) {
+	/*
+	 * Wait on what is actually outstanding rather than on a
+	 * predicted total.  An earlier version counted up to a target
+	 * that grew as transfers were resubmitted, so a resubmission
+	 * that failed left it waiting for completions that could never
+	 * arrive.  The idle limit means this can never hang either way.
+	 */
+	while (inflight > 0 && idle < 5) {
 		struct timeval tv = { 1, 0 };
+		int before = completed;
 
 		if (libusb_handle_events_timeout(NULL, &tv) != 0)
 			break;
-		if (completed == 0 && rounds == 0)
-			break;			/* nothing is coming */
+		idle = (completed == before) ? idle + 1 : 0;
 	}
 
 	libusb_release_interface(dh, t.interface);

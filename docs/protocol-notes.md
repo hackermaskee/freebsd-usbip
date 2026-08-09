@@ -104,11 +104,30 @@ simply stops answering, which the transfer timeout handles.
   for stall (-EPIPE) and short reads (-EREMOTEIO with SHORT_NOT_OK).
 - Whether the server tolerates a `setup[8]` that is non-zero on
   non-control endpoints (we always zero it).
-- **`interval` units.** We send the transfer's interval in
-  milliseconds, which is what the FreeBSD stack works in. Linux URBs
-  express it in frames or microframes depending on speed, so this
-  probably needs converting. Interrupt transfers work regardless; the
-  polling rate may not be honoured exactly.
+- Whether a server minds `start_frame` being zero once
+  `URB_ISO_ASAP` is set (we always send zero).
+
+## The interval field
+
+Settled, and it needed converting. A Linux URB counts the polling
+period in frames at low and full speed but in **microframes** at high
+speed and above, while the FreeBSD stack works in milliseconds
+throughout - it folds the endpoint's exponential encoding away itself,
+which the "125us -> 1ms" comment in `usbd_transfer_setup_sub()` spells
+out. So a high-speed interrupt interval was being sent eight times too
+short.
+
+Isochronous was worse: the stack leaves the interval at zero and
+comments that it is unused, and Linux rejects a URB whose interval is
+zero outright. That alone would stop any isochronous transfer from ever
+being scheduled, so the value has to come from the endpoint descriptor
+instead. An isochronous endpoint encodes its period as
+2^(bInterval-1), which is already in the units Linux wants at either
+speed.
+
+Confirmed on the wire against `tests/fake_usbipd.py`: an interrupt
+endpoint with `bInterval` 4 at high speed now goes out as 8
+microframes, and an isochronous endpoint with `bInterval` 1 as 1.
 
 ## Isochronous: what is settled and what is not
 
@@ -136,12 +155,18 @@ Settled by observation:
 
 Not settled:
 
-- **What a server's isochronous `RET_SUBMIT` looks like.** Getting one
-  requires a server that actually completes isochronous URBs.
-  `usbip-vudc` does not: it accepts the submission, logs nothing, and
-  never answers, and the gadget's own ALSA side fails with EIO. So our
-  receive path is written from the same assumption as the transmit
-  path rather than from observation, and is untested.
+- **What a server's isochronous `RET_SUBMIT` looks like.** Neither
+  server available would produce one. `usbip-vudc` accepts the
+  submission, logs nothing and never answers. A real audio interface
+  exported with `usbip-host` did the same, even with `URB_ISO_ASAP`
+  set - though that attempt was made before the interval was being
+  sent correctly, which is the likeliest reason and is now fixed.
 
-  Settling it needs a server exporting a **real** device with
-  isochronous endpoints, via `usbip-host` rather than `usbip-vudc`.
+  So the receive path is written from the same assumption as the
+  transmit path. It is no longer untested, though: it is exercised
+  against `tests/fake_usbipd.py`, which emulates an isochronous IN
+  endpoint and fills packet *i* with the byte *i* so that a packet
+  scattered to the wrong offset is caught rather than merely looking
+  plausible. What that proves is that the implementation is coherent
+  and does not corrupt or crash - not that the assumption matches
+  Linux.

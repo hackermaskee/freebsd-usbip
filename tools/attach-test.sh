@@ -77,6 +77,14 @@ else
 	echo "    (tests/bulk_test not built; make -C tests bulk_test)"
 fi
 
+echo "== isochronous =="
+if [ -x "$TOP/tests/iso_probe" ]; then
+	"$TOP/tests/iso_probe" 1209 0001 2>&1 | sed 's/^/    /'
+	echo "  iso exit=$?"
+else
+	echo "    (tests/iso_probe not built; make -C tests iso_probe)"
+fi
+
 echo "== detach =="
 "$USBIP" detach -p 0 | sed 's/^/    /'
 sleep 2

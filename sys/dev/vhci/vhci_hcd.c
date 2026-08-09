@@ -186,6 +186,53 @@ vhci_is_iso(const struct usb_xfer *xfer)
 }
 
 /*
+ * The polling period, in the units a Linux URB uses: frames at low and
+ * full speed, microframes at high speed and above.
+ *
+ * The FreeBSD stack works in milliseconds, having already folded the
+ * endpoint's exponential encoding away - see the "125us -> 1ms"
+ * conversion in usbd_transfer_setup_sub().  So an interrupt interval
+ * only needs scaling.
+ *
+ * Isochronous is different: the stack leaves the interval at zero and
+ * says it is unused, but Linux rejects a zero interval outright, so it
+ * has to come from the endpoint descriptor instead.  An isochronous
+ * endpoint encodes its period as 2^(bInterval-1), already in the units
+ * Linux wants at either speed, so that value passes straight through.
+ */
+static uint32_t
+vhci_interval(struct usb_xfer *xfer)
+{
+	const struct usb_endpoint_descriptor *edesc = xfer->endpoint->edesc;
+	enum usb_dev_speed speed = xfer->xroot->udev->speed;
+	uint32_t interval;
+	uint8_t bi;
+
+	switch (edesc->bmAttributes & UE_XFERTYPE) {
+	case UE_INTERRUPT:
+	case UE_ISOCHRONOUS:
+		break;
+	default:
+		return (0);		/* control and bulk have no period */
+	}
+
+	if ((edesc->bmAttributes & UE_XFERTYPE) == UE_ISOCHRONOUS) {
+		bi = edesc->bInterval;
+		if (bi < 1)
+			bi = 1;
+		else if (bi > 16)
+			bi = 16;
+		interval = 1U << (bi - 1);
+	} else {
+		interval = xfer->interval;
+		if (speed != USB_SPEED_LOW && speed != USB_SPEED_FULL)
+			interval *= 8;	/* milliseconds to microframes */
+	}
+
+	return (interval != 0 ? interval : 1);
+}
+
+/*
  * Isochronous transfers are laid out differently by the USB stack: the
  * frames are packets within a single buffer, rather than a buffer each.
  * So a packet lives at its cumulative offset in frbuffers[0], while
@@ -620,7 +667,7 @@ vhci_tx_submit(struct vhci_port *port, struct vhci_urb *urb)
 	be32enc(hdr + 28, 0);				/* start_frame */
 	be32enc(hdr + 32, vhci_is_iso(xfer) ? xfer->nframes :
 	    (uint32_t)USBIP_NUMBER_OF_PACKETS_NON_ISO);
-	be32enc(hdr + 36, xfer->interval);
+	be32enc(hdr + 36, vhci_interval(xfer));
 	if (xfer->flags_int.control_xfr)
 		usbd_copy_out(xfer->frbuffers + 0, 0, hdr + 40, 8);
 
