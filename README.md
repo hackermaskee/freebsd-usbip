@@ -20,6 +20,7 @@ reference.)
 | `usr.sbin/usbip/` | `usbip(8)`: `list` / `attach` / `detach` / `port`. Performs the OP_REQ_DEVLIST / OP_REQ_IMPORT handshake in userland, then passes the connected socket to `vhci(4)`. |
 | `usr.sbin/usbipd/` | `usbipd(8)`: exports local devices. Pure userland on top of libusb and ugen(4), so the server side needs no kernel support at all. |
 | `tests/` | Protocol golden tests (`proto_test`), a USB/IP server that emulates a device in software (`fake_usbipd.py`) and one that lies (`hostile_usbipd.py`), and transfer exercisers (`bulk_test.c`, `iso_probe.c`). No hardware needed. |
+| `rc.d/`, `port/` | An rc script for `usbipd(8)`, and a FreeBSD port skeleton that builds and stages the lot. |
 | `tools/` | Build and test helpers: `syntax-check.sh` type-checks the driver on a non-FreeBSD machine; `smoke-test.sh`, `race-test.sh` and `attach-test.sh` are the three things worth running on the target; `linux-vudc-server.sh` stands up a real Linux server for interop testing. |
 
 ## Status
@@ -70,6 +71,19 @@ kldload sys/modules/vhci/vhci.ko
 Development can happen on a non-FreeBSD machine: `tools/syntax-check.sh`
 compiles the driver against real FreeBSD headers to catch wrong struct
 members and signatures without a round trip to the target.
+
+## Installing
+
+```sh
+make && make kmod SYSDIR=/usr/src/sys
+sudo make install            # PREFIX and KMODDIR are honoured
+sysrc usbipd_enable=YES usbipd_devices=ugen0.2
+service usbipd start
+```
+
+`port/` is a FreeBSD port skeleton that does the same through the ports
+framework. It needs a release to fetch: fill in `MASTER_SITES`, or
+switch to `USE_GITHUB`, and run `make makesum`.
 
 ## Testing
 

@@ -5,7 +5,7 @@ PROG=	usbipd
 CC?=	cc
 CFLAGS+=	-Wall -Wextra -O2 -g
 CFLAGS+=	-I../../sys/dev/vhci -I../usbip/libusbip
-LDFLAGS+=	-lusb -lpthread
+LDFLAGS+=	-lusb -lpthread -lutil
 
 LIBOBJ=	../usbip/libusbip/usbip_net.o
 OBJS=	usbipd.o device.o urb.o $(LIBOBJ)

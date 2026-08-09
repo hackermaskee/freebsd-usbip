@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+#
+# PROVIDE: usbipd
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following to /etc/rc.conf to enable usbipd:
+#
+#	usbipd_enable="YES"
+#	usbipd_devices="ugen0.2"	# bus ids to export, from usbipd -l
+#	usbipd_flags=""			# e.g. "-t 3241" or "-4"
+#
+# A device must be named: exporting one hands it to the client
+# completely, so there is no safe default.  Set usbipd_devices to "-a"
+# to export everything, on a machine kept for that purpose.
+
+. /etc/rc.subr
+
+name="usbipd"
+desc="Export USB devices over USB/IP"
+rcvar="usbipd_enable"
+
+load_rc_config $name
+
+: ${usbipd_enable:="NO"}
+: ${usbipd_devices:=""}
+: ${usbipd_flags:=""}
+
+pidfile="/var/run/${name}.pid"
+command="%%PREFIX%%/sbin/usbipd"
+command_args="-D -P ${pidfile} ${usbipd_devices}"
+
+start_precmd="usbipd_precmd"
+
+usbipd_precmd()
+{
+
+	if [ -z "${usbipd_devices}" ]; then
+		err 1 "set usbipd_devices in rc.conf to the bus ids to" \
+		    "export; '${command} -l' lists them"
+	fi
+}
+
+run_rc_command "$1"

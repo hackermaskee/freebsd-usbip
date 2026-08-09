@@ -23,6 +23,7 @@
 
 #include <err.h>
 #include <errno.h>
+#include <libutil.h>
 #include <netdb.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -126,12 +127,15 @@ usage(void)
 {
 
 	fprintf(stderr,
-	    "usage: usbipd [-v] [-4|-6] [-t port] [-a] busid ...\n"
+	    "usage: usbipd [-Dv] [-4|-6] [-t port] [-P pidfile] [-a] "
+	    "busid ...\n"
 	    "       usbipd -l\n"
 	    "\n"
 	    "  -l   list local devices and exit\n"
 	    "  -a   export every device, rather than only those named\n"
 	    "  -t   TCP port to listen on (default %s)\n"
+	    "  -D   run in the background\n"
+	    "  -P   write the process id here\n"
 	    "  -v   report what happens\n",
 	    USBIP_PORT_STRING);
 	exit(1);
@@ -406,13 +410,21 @@ main(int argc, char **argv)
 	struct usbipd d;
 	struct sigaction sa_int;
 	const char *service = USBIP_PORT_STRING;
+	struct pidfh *pfh = NULL;
+	const char *pidfile = NULL;
 	int family = AF_UNSPEC;
-	int ch, lfd, listing = 0, error, i;
+	int ch, lfd, listing = 0, background = 0, error, i;
 
 	memset(&d, 0, sizeof(d));
 
-	while ((ch = getopt(argc, argv, "46alt:v")) != -1) {
+	while ((ch = getopt(argc, argv, "46aDlP:t:v")) != -1) {
 		switch (ch) {
+		case 'D':
+			background = 1;
+			break;
+		case 'P':
+			pidfile = optarg;
+			break;
 		case '4':
 			family = AF_INET;
 			break;
@@ -478,6 +490,30 @@ main(int argc, char **argv)
 	sigaction(SIGTERM, &sa_int, NULL);
 
 	lfd = listen_on(service, family);
+
+	/*
+	 * Bind before detaching, so that a port already in use is
+	 * reported to whoever started us rather than disappearing into
+	 * the background.
+	 */
+	if (pidfile != NULL) {
+		pid_t other;
+
+		pfh = pidfile_open(pidfile, 0600, &other);
+		if (pfh == NULL) {
+			if (errno == EEXIST)
+				errx(1, "already running as pid %jd",
+				    (intmax_t)other);
+			warn("cannot write %s", pidfile);
+		}
+	}
+	if (background && daemon(0, 0) != 0) {
+		pidfile_remove(pfh);
+		err(1, "cannot detach");
+	}
+	if (pfh != NULL)
+		pidfile_write(pfh);
+
 	usbipd_log(&d, "listening on port %s", service);
 
 	while (!stop_requested) {
@@ -555,5 +591,7 @@ main(int argc, char **argv)
 
 	libusb_exit(d.ctx);
 	pthread_mutex_destroy(&d.lock);
+	if (pfh != NULL)
+		pidfile_remove(pfh);
 	return (0);
 }

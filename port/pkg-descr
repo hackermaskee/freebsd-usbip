@@ -1,0 +1,15 @@
+USB/IP lets a USB device plugged into one machine be used by another
+over the network, as though it were plugged in there.
+
+This is a from-scratch BSD-licensed implementation for FreeBSD of both
+halves of it, interoperating with the Linux tools at either end.
+
+vhci(4) is a virtual USB host controller: devices exported by a remote
+host appear on the local USB bus and ordinary class drivers attach to
+them.  usbip(8) drives it - list, attach, detach.
+
+usbipd(8) is the other direction, exporting local devices.  It runs
+entirely in userland on top of libusb and ugen(4), so nothing has to be
+loaded into the kernel to export a device.
+
+Control, bulk, interrupt and isochronous transfers are all carried.
