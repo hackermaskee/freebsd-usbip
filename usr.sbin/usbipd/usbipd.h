@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include <libusb.h>
 
@@ -30,13 +31,34 @@
 /* How many transfers a client may have outstanding at once. */
 #define	USBIPD_MAX_INFLIGHT	64
 
+/*
+ * Clients are served concurrently, so that one machine holding a device
+ * does not stop another from listing what is on offer or importing a
+ * different device.  A device itself is still exclusive: the protocol
+ * gives it to exactly one host.
+ */
+#define	USBIPD_MAX_CLIENTS	16
+#define	USBIPD_MAX_SESSIONS	8
+
 struct usbipd {
 	libusb_context	*ctx;
 	const char	*exports[USBIPD_MAX_EXPORTS];
 	int		nexports;
 	int		verbose;
 	bool		exportable_is_open;	/* -a: export everything */
+
+	/* Guards everything below, and serialises logging. */
+	pthread_mutex_t	lock;
+	int		nclients;
+	char		inuse[USBIPD_MAX_SESSIONS][USBIP_BUSID_SIZE];
 };
+
+/*
+ * Take a device for the calling session, or report that someone else
+ * has it.  Every successful claim needs a matching release.
+ */
+bool	usbipd_acquire(struct usbipd *d, const char *busid);
+void	usbipd_release(struct usbipd *d, const char *busid);
 
 /* device.c */
 void	usbipd_busid(libusb_device *dev, char *buf, size_t len);

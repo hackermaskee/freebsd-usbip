@@ -37,6 +37,7 @@ tar czf - -C "$TOP" \
     --exclude=device_if.h \
     --exclude=usb_if.h \
     --exclude=usr.sbin/usbip/usbip \
+    --exclude=usr.sbin/usbipd/usbipd \
     --exclude=tests/proto_test \
     --exclude=tests/bulk_test \
     --exclude=tests/iso_probe \
@@ -62,9 +63,10 @@ else
 	echo '   (no kernel source tree; skipped the module)'
 fi
 make -C usr.sbin/usbip 2>&1 | grep -E ': error|: warning' || true
+make -C usr.sbin/usbipd 2>&1 | grep -E ': error|: warning' || true
 make -C tests bulk_test iso_probe 2>&1 | grep -E ': error|: warning' || true
 echo '-- built --'
-for f in sys/modules/vhci/vhci.ko usr.sbin/usbip/usbip tests/bulk_test tests/iso_probe; do
+for f in sys/modules/vhci/vhci.ko usr.sbin/usbip/usbip usr.sbin/usbipd/usbipd tests/bulk_test tests/iso_probe; do
 	[ -f \$f ] && echo \"    \$f\"
 done
 "

@@ -73,6 +73,12 @@ While a device is exported, its interfaces are claimed and its
 drivers cannot use it.
 They come back when the client detaches or the connection drops.
 .Pp
+Clients are served concurrently, so one machine holding a device does
+not stop others from listing what is available or importing something
+else.
+A device itself goes to one client at a time; a second attempt to
+import the same one is refused.
+.Pp
 Transfers are carried asynchronously, so a client may have many
 outstanding at once and an endpoint that never answers does not block
 the others.

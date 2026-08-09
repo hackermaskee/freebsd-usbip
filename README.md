@@ -47,7 +47,8 @@ enumerates and control, bulk and interrupt transfers all work.
   transmit path. See `docs/protocol-notes.md`.
 - **Server side done**: `usbipd(8)` exports local devices, verified
   against the real Linux `usbip` client - which enumerates the device
-  and moves bulk and interrupt data through it correctly.
+  and moves bulk and interrupt data through it correctly. Clients are
+  served concurrently; a device still goes to one of them at a time.
 
 ## Build
 
@@ -80,6 +81,7 @@ sudo tools/race-test.sh     # is unloading during enumeration refused?
 sudo tools/attach-test.sh   # attach an emulated device and move data
 sudo tools/error-test.sh    # what happens when the server dies
 sudo tools/hostile-test.sh  # what happens when the server lies
+sudo tools/server-test.sh   # does usbipd(8) cope with several clients
 ```
 
 To test against the canonical implementation rather than our own

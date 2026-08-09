@@ -8,8 +8,10 @@
  * needed on this side; the device is claimed through ugen(4) like any
  * other libusb program.
  *
- * One client at a time per device, which is what the protocol assumes:
- * a device is imported by exactly one host.
+ * Clients are served concurrently, on a thread each, so that a machine
+ * holding a device does not stop others from listing what is on offer or
+ * importing something else.  A device itself still goes to one client at
+ * a time, which is what the protocol assumes.
  */
 
 #include <sys/types.h>
@@ -44,15 +46,65 @@ on_signal(int sig)
 void
 usbipd_log(const struct usbipd *d, const char *fmt, ...)
 {
+	struct usbipd *dd = __DECONST(struct usbipd *, d);
 	va_list ap;
 
 	if (!d->verbose)
 		return;
+	/*
+	 * Serialised so that two clients cannot interleave halves of
+	 * each other's lines.
+	 */
+	pthread_mutex_lock(&dd->lock);
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
 	va_end(ap);
 	fputc('\n', stderr);
 	fflush(stderr);
+	pthread_mutex_unlock(&dd->lock);
+}
+
+/*
+ * A device goes to one client at a time.  Anything else would let two
+ * hosts drive the same endpoints, and neither would get sense back.
+ */
+bool
+usbipd_acquire(struct usbipd *d, const char *busid)
+{
+	int i, free_slot = -1;
+
+	pthread_mutex_lock(&d->lock);
+	for (i = 0; i < USBIPD_MAX_SESSIONS; i++) {
+		if (d->inuse[i][0] == '\0') {
+			if (free_slot < 0)
+				free_slot = i;
+		} else if (strcmp(d->inuse[i], busid) == 0) {
+			pthread_mutex_unlock(&d->lock);
+			return (false);		/* someone already has it */
+		}
+	}
+	if (free_slot < 0) {
+		pthread_mutex_unlock(&d->lock);
+		return (false);			/* no room for another */
+	}
+	strlcpy(d->inuse[free_slot], busid, sizeof(d->inuse[free_slot]));
+	pthread_mutex_unlock(&d->lock);
+	return (true);
+}
+
+void
+usbipd_release(struct usbipd *d, const char *busid)
+{
+	int i;
+
+	pthread_mutex_lock(&d->lock);
+	for (i = 0; i < USBIPD_MAX_SESSIONS; i++) {
+		if (strcmp(d->inuse[i], busid) == 0) {
+			d->inuse[i][0] = '\0';
+			break;
+		}
+	}
+	pthread_mutex_unlock(&d->lock);
 }
 
 bool
@@ -202,15 +254,27 @@ serve_import(struct usbipd *d, int fd)
 		    USBIP_ST_NA));
 	}
 
+	/*
+	 * Claim it before opening.  Two clients importing the same
+	 * device would each think they had it to themselves.
+	 */
+	if (!usbipd_acquire(d, busid)) {
+		usbipd_log(d, "refused %s: already imported", busid);
+		return (usbip_net_send_op_reply(fd, OP_REP_IMPORT,
+		    USBIP_ST_NA));
+	}
+
 	dev = usbipd_find(d->ctx, busid);
 	if (dev == NULL) {
 		usbipd_log(d, "refused %s: no such device", busid);
+		usbipd_release(d, busid);
 		return (usbip_net_send_op_reply(fd, OP_REP_IMPORT,
 		    USBIP_ST_NA));
 	}
 
 	if (usbipd_describe(dev, &udev, intfs, &nintfs) != 0) {
 		libusb_unref_device(dev);
+		usbipd_release(d, busid);
 		return (usbip_net_send_op_reply(fd, OP_REP_IMPORT,
 		    USBIP_ST_NA));
 	}
@@ -219,6 +283,7 @@ serve_import(struct usbipd *d, int fd)
 	libusb_unref_device(dev);
 	if (error != 0) {
 		usbipd_log(d, "refused %s: %s", busid, libusb_strerror(error));
+		usbipd_release(d, busid);
 		return (usbip_net_send_op_reply(fd, OP_REP_IMPORT,
 		    USBIP_ST_NA));
 	}
@@ -235,8 +300,15 @@ serve_import(struct usbipd *d, int fd)
 
 done:
 	libusb_close(dh);
+	usbipd_release(d, busid);
 	return (0);
 }
+
+struct client {
+	struct usbipd	*d;
+	int		fd;
+	char		peer[NI_MAXHOST];
+};
 
 static void
 serve_client(struct usbipd *d, int fd)
@@ -261,6 +333,30 @@ serve_client(struct usbipd *d, int fd)
 		(void)usbip_net_send_op_reply(fd, code & 0x7FFF, USBIP_ST_NA);
 		break;
 	}
+}
+
+/*
+ * One thread per connection.  A client that has imported a device holds
+ * its connection open for as long as it uses the device, so serving
+ * them one after another would mean nobody else could so much as ask
+ * what is available.
+ */
+static void *
+client_thread(void *arg)
+{
+	struct client *c = arg;
+	struct usbipd *d = c->d;
+
+	serve_client(d, c->fd);
+	close(c->fd);
+	usbipd_log(d, "%s disconnected", c->peer);
+
+	pthread_mutex_lock(&d->lock);
+	d->nclients--;
+	pthread_mutex_unlock(&d->lock);
+
+	free(c);
+	return (NULL);
 }
 
 static int
@@ -308,6 +404,7 @@ int
 main(int argc, char **argv)
 {
 	struct usbipd d;
+	struct sigaction sa_int;
 	const char *service = USBIP_PORT_STRING;
 	int family = AF_UNSPEC;
 	int ch, lfd, listing = 0, error, i;
@@ -352,6 +449,8 @@ main(int argc, char **argv)
 		usage();
 	}
 
+	pthread_mutex_init(&d.lock, NULL);
+
 	error = libusb_init(&d.ctx);
 	if (error != 0)
 		errx(1, "libusb: %s", libusb_strerror(error));
@@ -364,8 +463,19 @@ main(int argc, char **argv)
 
 	/* A client that vanishes mid-write must not take us with it. */
 	signal(SIGPIPE, SIG_IGN);
-	signal(SIGINT, on_signal);
-	signal(SIGTERM, on_signal);
+
+	/*
+	 * Deliberately not signal(3): on BSD it installs the handler with
+	 * SA_RESTART, so accept() would resume instead of returning, and
+	 * the daemon would not notice it had been asked to stop until the
+	 * next client happened to connect.
+	 */
+	memset(&sa_int, 0, sizeof(sa_int));
+	sa_int.sa_handler = on_signal;
+	sigemptyset(&sa_int.sa_mask);
+	sa_int.sa_flags = 0;
+	sigaction(SIGINT, &sa_int, NULL);
+	sigaction(SIGTERM, &sa_int, NULL);
 
 	lfd = listen_on(service, family);
 	usbipd_log(&d, "listening on port %s", service);
@@ -374,6 +484,8 @@ main(int argc, char **argv)
 		struct sockaddr_storage sa;
 		socklen_t salen = sizeof(sa);
 		char host[NI_MAXHOST];
+		struct client *c;
+		pthread_t tid;
 		int fd;
 
 		fd = accept(lfd, (struct sockaddr *)&sa, &salen);
@@ -386,13 +498,62 @@ main(int argc, char **argv)
 		if (getnameinfo((struct sockaddr *)&sa, salen, host,
 		    sizeof(host), NULL, 0, NI_NUMERICHOST) != 0)
 			strlcpy(host, "?", sizeof(host));
-		usbipd_log(&d, "connection from %s", host);
 
-		serve_client(&d, fd);
-		close(fd);
+		c = calloc(1, sizeof(*c));
+		if (c == NULL) {
+			close(fd);
+			continue;
+		}
+		c->d = &d;
+		c->fd = fd;
+		strlcpy(c->peer, host, sizeof(c->peer));
+
+		pthread_mutex_lock(&d.lock);
+		if (d.nclients >= USBIPD_MAX_CLIENTS) {
+			pthread_mutex_unlock(&d.lock);
+			usbipd_log(&d, "refusing %s: too many clients", host);
+			close(fd);
+			free(c);
+			continue;
+		}
+		d.nclients++;
+		pthread_mutex_unlock(&d.lock);
+
+		usbipd_log(&d, "connection from %s", host);
+		if (pthread_create(&tid, NULL, client_thread, c) != 0) {
+			pthread_mutex_lock(&d.lock);
+			d.nclients--;
+			pthread_mutex_unlock(&d.lock);
+			warn("cannot serve %s", host);
+			close(fd);
+			free(c);
+			continue;
+		}
+		/* Nothing waits for it; it cleans up after itself. */
+		pthread_detach(tid);
 	}
 
 	close(lfd);
+
+	/*
+	 * Let anyone still connected finish rather than pulling libusb
+	 * out from under their transfers.  Bounded, because a client
+	 * that never goes away should not stop us exiting either.
+	 */
+	for (i = 0; i < 100; i++) {
+		int busy;
+
+		pthread_mutex_lock(&d.lock);
+		busy = d.nclients;
+		pthread_mutex_unlock(&d.lock);
+		if (busy == 0)
+			break;
+		if (i == 0)
+			usbipd_log(&d, "waiting for %d client(s)", busy);
+		usleep(100000);
+	}
+
 	libusb_exit(d.ctx);
+	pthread_mutex_destroy(&d.lock);
 	return (0);
 }
