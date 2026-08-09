@@ -38,17 +38,17 @@ enumerates and control, bulk and interrupt transfers all work.
   trips are byte-exact from 1 byte to 100 KB. A server that dies, with
   or without transfers outstanding, takes the device away cleanly and
   frees the port for reuse.
-- **M4 partial**: isochronous transfers work end to end against our
-  own test server, packets landing at the right offsets, and the
-  submission format is accepted by a real Linux `usbipd`. What is still
-  unconfirmed is the *reply* format: no server available would complete
-  an isochronous URB, so no server-generated packet descriptor has been
-  observed and our receive path rests on the same assumption as the
-  transmit path. See `docs/protocol-notes.md`.
+- **M4 done**: isochronous transfers work in both directions and the
+  wire format is confirmed against Linux at both ends. No server would
+  send us an isochronous reply, so the question was turned around:
+  `usbipd(8)` sends them to a Linux client, which places every packet
+  where our descriptors say and delivers data that matches byte for
+  byte. See `docs/protocol-notes.md`.
 - **Server side done**: `usbipd(8)` exports local devices, verified
   against the real Linux `usbip` client - which enumerates the device
-  and moves bulk and interrupt data through it correctly. Clients are
-  served concurrently; a device still goes to one of them at a time.
+  and moves bulk, interrupt and isochronous data through it correctly.
+  Clients are served concurrently; a device still goes to one of them
+  at a time.
 
 ## Build
 

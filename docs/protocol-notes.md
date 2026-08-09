@@ -129,7 +129,7 @@ Confirmed on the wire against `tests/fake_usbipd.py`: an interrupt
 endpoint with `bInterval` 4 at high speed now goes out as 8
 microframes, and an isochronous endpoint with `bInterval` 1 as 1.
 
-## Isochronous: what is settled and what is not
+## Isochronous: settled
 
 The packet descriptor layout is the one thing the documentation does
 not describe. `tools/linux-iso-server.sh` exports a `g_audio` gadget
@@ -153,20 +153,29 @@ Settled by observation:
 - **`URB_ISO_ASAP` (0x0002) is required.** Without it the server takes
   `start_frame` literally, and zero is always in the past.
 
-Not settled:
+**The reply format is settled too**, by turning the question around.
+No server would send us an isochronous reply, but `usbipd(8)` can send
+one to a **Linux client** - and the same descriptor appears in both
+directions, so a client that understands ours settles the format.
 
-- **What a server's isochronous `RET_SUBMIT` looks like.** Neither
-  server available would produce one. `usbip-vudc` accepts the
-  submission, logs nothing and never answers. A real audio interface
-  exported with `usbip-host` did the same, even with `URB_ISO_ASAP`
-  set - though that attempt was made before the interval was being
-  sent correctly, which is the likeliest reason and is now fixed.
+It does. Linux's `vhci-hcd` accepts our replies, places every packet at
+the offset our descriptors give, and hands an application data that
+matches byte for byte: forty-two consecutive transfers of eight packets
+each, with the emulated device filling packet *i* with the byte *i* so
+that a packet delivered to the wrong offset could not pass unnoticed.
 
-  So the receive path is written from the same assumption as the
-  transmit path. It is no longer untested, though: it is exercised
-  against `tests/fake_usbipd.py`, which emulates an isochronous IN
-  endpoint and fills packet *i* with the byte *i* so that a packet
-  scattered to the wrong offset is caught rather than merely looking
-  plausible. What that proves is that the implementation is coherent
-  and does not corrupt or crash - not that the assumption matches
-  Linux.
+Two rules came out of that exchange rather than out of the
+documentation:
+
+- **A reply must not follow an unlink.** Having answered a
+  `USBIP_CMD_UNLINK` with `-ECONNRESET`, a server must stay silent
+  about that transfer. Linux has already forgotten the sequence
+  number, and answering anyway makes it log *cannot find a urb of
+  seqnum N* and drop the session. This is the mirror of the record the
+  client keeps for the same race.
+- **`SET_CONFIGURATION` and `SET_INTERFACE` cannot be forwarded as
+  bytes.** They have to be carried out through the local USB API, or
+  the host library does not know the device changed underneath it - and
+  on FreeBSD the alternate setting is what makes `ugen(4)` allocate an
+  isochronous endpoint at all, so forwarding them means no isochronous
+  transfer ever leaves the machine.

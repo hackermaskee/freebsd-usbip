@@ -36,7 +36,9 @@
 /* Enough transfers in flight to keep a stream going for a moment. */
 #define	NTRANSFERS	4
 #define	NPACKETS	8
-#define	NROUNDS		4
+#ifndef NROUNDS
+#define	NROUNDS		4	/* -DNROUNDS=n to stream for longer */
+#endif
 
 static int completed;
 static int inflight;

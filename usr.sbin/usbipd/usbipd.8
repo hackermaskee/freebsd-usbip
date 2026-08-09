@@ -117,6 +117,9 @@ The connection is neither encrypted nor authenticated, and anyone who
 can reach the port can take the exported device and everything on it.
 Export only onto a network you trust.
 .Sh BUGS
-Isochronous transfers are not carried; a submission for one is refused
-rather than ignored, so a client sees an error instead of waiting.
-Audio interfaces and webcams will not work.
+Isochronous transfers are carried, but the format of a reply is
+assumed rather than known: the protocol documentation does not
+describe the isochronous packet descriptor.
+See
+.Pa docs/protocol-notes.md
+in the source tree.

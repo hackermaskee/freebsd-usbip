@@ -79,13 +79,6 @@ It shares no code with the Linux implementation.
 .Sh AUTHORS
 .An Atsushi Furuta Aq Mt furuta@furuta.bsdclub.org
 .Sh BUGS
-Isochronous transfers are implemented but only half proven.
-Submissions are accepted by a real Linux server, and the whole path
-works against the emulated device in the source tree, but no server
-tested would complete an isochronous transfer, so the format of a
-reply has never been observed and is assumed rather than known.
-Treat audio interfaces and webcams as untested.
-.Pp
 An isochronous transfer is limited to what fits in the driver's
 staging buffer, because a reply cannot be placed until the packet
 descriptors that follow it have been read.
