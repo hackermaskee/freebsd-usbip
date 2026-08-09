@@ -66,7 +66,7 @@ usbip_net_connect(const char *host, const char *service)
 }
 
 int
-usbip_net_recv_exact(int fd, void *buf, size_t len)
+usbip_net_recv_exact_quiet(int fd, void *buf, size_t len)
 {
 	char *p = buf;
 	ssize_t n;
@@ -76,11 +76,10 @@ usbip_net_recv_exact(int fd, void *buf, size_t len)
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			fprintf(stderr, "usbip: recv: %s\n", strerror(errno));
 			return (-1);
 		}
 		if (n == 0) {
-			fprintf(stderr, "usbip: connection closed by peer\n");
+			errno = ECONNRESET;	/* closed by peer */
 			return (-1);
 		}
 		p += n;
@@ -90,7 +89,7 @@ usbip_net_recv_exact(int fd, void *buf, size_t len)
 }
 
 int
-usbip_net_send_all(int fd, const void *buf, size_t len)
+usbip_net_send_all_quiet(int fd, const void *buf, size_t len)
 {
 	const char *p = buf;
 	ssize_t n;
@@ -100,11 +99,35 @@ usbip_net_send_all(int fd, const void *buf, size_t len)
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			fprintf(stderr, "usbip: send: %s\n", strerror(errno));
 			return (-1);
 		}
 		p += n;
 		len -= (size_t)n;
+	}
+	return (0);
+}
+
+int
+usbip_net_recv_exact(int fd, void *buf, size_t len)
+{
+
+	if (usbip_net_recv_exact_quiet(fd, buf, len) != 0) {
+		if (errno == ECONNRESET)
+			fprintf(stderr, "usbip: connection closed by peer\n");
+		else
+			fprintf(stderr, "usbip: recv: %s\n", strerror(errno));
+		return (-1);
+	}
+	return (0);
+}
+
+int
+usbip_net_send_all(int fd, const void *buf, size_t len)
+{
+
+	if (usbip_net_send_all_quiet(fd, buf, len) != 0) {
+		fprintf(stderr, "usbip: send: %s\n", strerror(errno));
+		return (-1);
 	}
 	return (0);
 }
@@ -171,6 +194,56 @@ usbip_usb_device_ntoh(struct usbip_usb_device *udev)
 	/* Force NUL termination on strings received from the network. */
 	udev->path[USBIP_DEV_PATH_SIZE - 1] = '\0';
 	udev->busid[USBIP_BUSID_SIZE - 1] = '\0';
+}
+
+void
+usbip_usb_device_hton(struct usbip_usb_device *udev)
+{
+
+	udev->busnum = htonl(udev->busnum);
+	udev->devnum = htonl(udev->devnum);
+	udev->speed = htonl(udev->speed);
+	udev->idVendor = htons(udev->idVendor);
+	udev->idProduct = htons(udev->idProduct);
+	udev->bcdDevice = htons(udev->bcdDevice);
+}
+
+int
+usbip_net_recv_op_request(int fd, uint16_t *codep)
+{
+	struct usbip_op_common op;
+	uint16_t version;
+
+	if (usbip_net_recv_exact_quiet(fd, &op, sizeof(op)) != 0)
+		return (-1);
+
+	version = ntohs(op.version);
+	if (version != USBIP_PROTO_VERSION) {
+		/*
+		 * Answer anyway, echoing the request code with the reply
+		 * bit cleared, so the client reports a version mismatch
+		 * rather than a closed connection.
+		 */
+		(void)usbip_net_send_op_reply(fd,
+		    ntohs(op.code) & 0x7FFF, USBIP_ST_NA);
+		return (-1);
+	}
+
+	*codep = ntohs(op.code);
+	return (0);
+}
+
+int
+usbip_net_send_op_reply(int fd, uint16_t code, uint32_t status)
+{
+	struct usbip_op_common op;
+
+	memset(&op, 0, sizeof(op));
+	op.version = htons(USBIP_PROTO_VERSION);
+	op.code = htons(code);
+	op.status = htonl(status);
+
+	return (usbip_net_send_all_quiet(fd, &op, sizeof(op)));
 }
 
 int

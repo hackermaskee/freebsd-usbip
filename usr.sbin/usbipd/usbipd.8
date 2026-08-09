@@ -1,0 +1,116 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.\" Copyright (c) 2026 furuta@furuta.bsdclub.org
+.\"
+.Dd August 9, 2026
+.Dt USBIPD 8
+.Os
+.Sh NAME
+.Nm usbipd
+.Nd export local USB devices over the network
+.Sh SYNOPSIS
+.Nm
+.Op Fl v
+.Op Fl 4 | Fl 6
+.Op Fl t Ar port
+.Op Fl a
+.Ar busid ...
+.Nm
+.Fl l
+.Sh DESCRIPTION
+The
+.Nm
+daemon hands local USB devices to remote machines using the USB/IP
+protocol, so that a device plugged in here can be used as though it
+were plugged in there.
+The remote end may be
+.Fx
+running
+.Xr vhci 4 ,
+or Linux, or any other client that speaks the protocol.
+.Pp
+It runs entirely in userland, on top of
+.Xr libusb 3
+and
+.Xr ugen 4 ,
+so nothing needs to be loaded or configured in the kernel to export a
+device.
+It does need to run as root, because it opens the device.
+.Pp
+A device is exported only if it is named on the command line.
+That is deliberate: an imported device is taken over completely by the
+client, so exporting one by accident means losing the use of it here.
+.Pp
+The options are:
+.Bl -tag -width "-t port"
+.It Fl l
+List the local USB devices and exit.
+The first column is the bus id to pass to this command, and to
+.Nm usbip Cm attach Fl b
+on the client.
+.It Fl a
+Export every device rather than only those named.
+Convenient on a machine dedicated to the purpose; unwise anywhere else.
+.It Fl t Ar port
+Listen on this TCP port instead of the default 3240.
+.It Fl 4 , Fl 6
+Listen on IPv4 or IPv6 only.
+The default accepts both.
+.It Fl v
+Report connections and exports on standard error.
+.El
+.Sh IMPLEMENTATION NOTES
+Bus ids are the names
+.Fx
+already uses, as printed by
+.Xr usbconfig 8 ,
+so
+.Ar ugen0.2
+rather than the port path Linux would show.
+.Pp
+While a device is exported, its interfaces are claimed and its
+.Fx
+drivers cannot use it.
+They come back when the client detaches or the connection drops.
+.Pp
+Transfers are carried asynchronously, so a client may have many
+outstanding at once and an endpoint that never answers does not block
+the others.
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Export one device and watch what happens:
+.Bd -literal -offset indent
+# usbipd -l
+Local USB devices:
+  ugen0.2        0781:5567  High Speed (480 Mbit/s)
+                  if0  class 08/06/50
+# usbipd -v ugen0.2
+.Ed
+.Pp
+From the client:
+.Bd -literal -offset indent
+# usbip attach -r thishost -b ugen0.2
+.Ed
+.Sh SEE ALSO
+.Xr libusb 3 ,
+.Xr ugen 4 ,
+.Xr vhci 4 ,
+.Xr usbconfig 8 ,
+.Xr usbip 8
+.Sh HISTORY
+The
+.Nm
+daemon was written in 2026.
+It speaks the same protocol as the Linux daemon of the same name but
+shares no code with it.
+.Sh AUTHORS
+.An Atsushi Furuta Aq Mt furuta@furuta.bsdclub.org
+.Sh CAVEATS
+The connection is neither encrypted nor authenticated, and anyone who
+can reach the port can take the exported device and everything on it.
+Export only onto a network you trust.
+.Sh BUGS
+Isochronous transfers are not carried; a submission for one is refused
+rather than ignored, so a client sees an error instead of waiting.
+Audio interfaces and webcams will not work.

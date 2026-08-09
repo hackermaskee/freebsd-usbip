@@ -16,6 +16,8 @@
  * Build with libusb, which is in the FreeBSD base system:
  *	cc -o bulk_test bulk_test.c -lusb
  *
+ *	cc -o bulk_test bulk_test.c -lusb-1.0    # Linux
+ *
  *	./bulk_test              # the emulated device
  *	./bulk_test 0525 a4a0    # Linux's g_zero gadget
  *	./bulk_test loop         # repeat until something fails
@@ -33,7 +35,11 @@
 #include <inttypes.h>
 #include <string.h>
 
+#ifdef __FreeBSD__
 #include <libusb.h>
+#else
+#include <libusb-1.0/libusb.h>
+#endif
 
 #define	TEST_VENDOR	0x1209
 #define	TEST_PRODUCT	0x0001

@@ -1,9 +1,10 @@
 # USB/IP for FreeBSD
 
-A from-scratch, BSD-2-Clause implementation of the
-[USB/IP](https://docs.kernel.org/usb/usbip_protocol.html) client for
-FreeBSD: attach USB devices exported by a remote host (Linux `usbipd`,
-`usbipd-win`, ...) as if they were plugged into the local machine.
+A from-scratch, BSD-2-Clause implementation of
+[USB/IP](https://docs.kernel.org/usb/usbip_protocol.html) for FreeBSD,
+both halves of it: attach USB devices exported by a remote host as if
+they were plugged in locally, and export local devices to remote hosts.
+Interoperates with Linux at both ends.
 
 Both the kernel driver and the userland tool are new code written from
 the protocol documentation; no GPL Linux implementation code is used or
@@ -17,6 +18,7 @@ reference.)
 | `sys/dev/vhci/` | `vhci(4)`: virtual USB host controller kernel driver. Plugs into the FreeBSD usb(4) stack, speaks the USB/IP URB phase over a TCP socket handed off from userland. |
 | `sys/modules/vhci/` | kmod build glue (FreeBSD only, `bsd.kmod.mk`). |
 | `usr.sbin/usbip/` | `usbip(8)`: `list` / `attach` / `detach` / `port`. Performs the OP_REQ_DEVLIST / OP_REQ_IMPORT handshake in userland, then passes the connected socket to `vhci(4)`. |
+| `usr.sbin/usbipd/` | `usbipd(8)`: exports local devices. Pure userland on top of libusb and ugen(4), so the server side needs no kernel support at all. |
 | `tests/` | Protocol golden tests (`proto_test`), a USB/IP server that emulates a device in software (`fake_usbipd.py`) and one that lies (`hostile_usbipd.py`), and transfer exercisers (`bulk_test.c`, `iso_probe.c`). No hardware needed. |
 | `tools/` | Build and test helpers: `syntax-check.sh` type-checks the driver on a non-FreeBSD machine; `smoke-test.sh`, `race-test.sh` and `attach-test.sh` are the three things worth running on the target; `linux-vudc-server.sh` stands up a real Linux server for interop testing. |
 
@@ -43,8 +45,9 @@ enumerates and control, bulk and interrupt transfers all work.
   an isochronous URB, so no server-generated packet descriptor has been
   observed and our receive path rests on the same assumption as the
   transmit path. See `docs/protocol-notes.md`.
-- Later: server side (export FreeBSD devices), implemented in userland
-  via ugen(4)/libusb.
+- **Server side done**: `usbipd(8)` exports local devices, verified
+  against the real Linux `usbip` client - which enumerates the device
+  and moves bulk and interrupt data through it correctly.
 
 ## Build
 

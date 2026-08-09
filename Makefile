@@ -6,6 +6,14 @@
 all:
 	$(MAKE) -C usr.sbin/usbip
 	$(MAKE) -C tests
+	@# usbipd needs libusb, which is base on FreeBSD but a package
+	@# elsewhere; skip it rather than fail a plain "make".
+	@if [ -e /usr/include/libusb.h ] || \
+	    [ -e /usr/local/include/libusb.h ]; then \
+		$(MAKE) -C usr.sbin/usbipd; \
+	else \
+		echo "skipping usbipd: no libusb.h"; \
+	fi
 
 check: all
 	$(MAKE) -C tests check
@@ -21,6 +29,7 @@ kmod:
 
 clean:
 	$(MAKE) -C usr.sbin/usbip clean
+	$(MAKE) -C usr.sbin/usbipd clean
 	$(MAKE) -C tests clean
 
 .PHONY: all check kmod clean
